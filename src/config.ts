@@ -25,12 +25,13 @@ export const DEFAULT_SEARCH_TIMEOUT_MS = 120000;
 export const DEFAULT_FETCH_TIMEOUT_MS = 120000;
 export const DEFAULT_MAX_RESULTS = 10;
 export const DEFAULT_MAX_MARKDOWN_CHARS = 100000;
-export const DEFAULT_MAX_TOKENS = 8192;
+export const DEFAULT_MAX_TOKENS = 38400;
 export const DEFAULT_MAX_HTML_CHARS = 200000;
 export const DEFAULT_SETTLE_MS = 1500;
 export const DEFAULT_LAUNCH_TIMEOUT_MS = 30000;
 export const DEFAULT_NAVIGATION_TIMEOUT_MS = 45000;
-export const DEFAULT_MAX_SUBAGENT_ROUNDS = 2;
+/** 子代理交互轮数默认值：-1 表示不限制轮数。 */
+export const DEFAULT_MAX_SUBAGENT_ROUNDS = -1;
 export const MAX_TIMER_DELAY_MS = 2147483647;
 
 /** 已解析的模型路由（provider + model + 可选推理等级）。 */
@@ -170,7 +171,8 @@ export function resolvePluginConfig(config: Partial<PluginConfig> | undefined): 
     subagent: {
       enabled: subagent.enabled ?? true,
       route: routeOf(subagent.selection),
-      maxRounds: intInRange(subagent.maxRounds, DEFAULT_MAX_SUBAGENT_ROUNDS, 0, 5),
+      // -1 表示不限制轮数；其余取值裁剪到 [0, 100]。
+      maxRounds: subagent.maxRounds === -1 ? -1 : intInRange(subagent.maxRounds, DEFAULT_MAX_SUBAGENT_ROUNDS, 0, 100),
     },
   });
 }

@@ -137,8 +137,8 @@ async function captureAnalyzeLoop(options: LoopOptions): Promise<{ snapshot: Pag
     signal.throwIfAborted();
     const snapshot = await captureSnapshot(page, config.analysis.maxHtmlChars);
     const canInteract = config.subagent.enabled
-      && config.subagent.maxRounds > 0
-      && round < config.subagent.maxRounds
+      && config.subagent.maxRounds !== 0
+      && (config.subagent.maxRounds === -1 || round < config.subagent.maxRounds)
       && agent !== undefined
       && subagentAvailable();
     const reply = await runAnalysis(ctx, options.buildPrompt(snapshot, canInteract, note), route, config, signal, sessionId);

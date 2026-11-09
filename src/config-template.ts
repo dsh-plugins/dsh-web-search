@@ -78,7 +78,7 @@ export function createConfigTemplate() {
       object('subagent', '子代理页面操作', [
         { type: 'boolean', key: 'enabled', label: '允许子代理操作页面', default: true, description: '当分析模型判断页面需要点击、输入等交互时，派出子代理使用浏览器工具操作页面后重新分析。' },
         { type: 'model', key: 'selection', label: '子代理模型', default: null, description: '留空时子代理沿用发起会话的模型。' },
-        { type: 'number', key: 'maxRounds', label: '交互轮数上限', default: DEFAULT_MAX_SUBAGENT_ROUNDS, min: 0, max: 5, description: '单次工具调用最多允许的「子代理操作 → 重新分析」轮数；0 表示不派出子代理。' },
+        { type: 'number', key: 'maxRounds', label: '交互轮数上限', default: DEFAULT_MAX_SUBAGENT_ROUNDS, min: -1, max: 100, description: '单次工具调用最多允许的「子代理操作 → 重新分析」轮数；-1 表示不限制，0 表示不派出子代理。' },
       ]),
     ],
     panels: [{

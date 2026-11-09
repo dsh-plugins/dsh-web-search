@@ -11,7 +11,8 @@ test('空配置回退到默认值', () => {
   assert.equal(config.browser.headless, true);
   assert.equal(config.analysis.route, undefined);
   assert.equal(config.subagent.enabled, true);
-  assert.equal(config.subagent.maxRounds, 2);
+  assert.equal(config.subagent.maxRounds, -1);
+  assert.equal(config.analysis.maxTokens, 38400);
 });
 
 test('非法取值回退默认值，数值裁剪到范围内', () => {
@@ -41,4 +42,11 @@ test('解析结果是冻结的', () => {
   const config = resolvePluginConfig(undefined);
   assert.ok(Object.isFrozen(config));
   assert.ok(Object.isFrozen(config.search));
+});
+
+test('子代理轮数：-1 保留表示无限制，0 表示禁用，越界裁剪', () => {
+  assert.equal(resolvePluginConfig({ subagent: { maxRounds: -1 } }).subagent.maxRounds, -1);
+  assert.equal(resolvePluginConfig({ subagent: { maxRounds: 0 } }).subagent.maxRounds, 0);
+  assert.equal(resolvePluginConfig({ subagent: { maxRounds: 999 } }).subagent.maxRounds, 100);
+  assert.equal(resolvePluginConfig({ subagent: { maxRounds: -5 } }).subagent.maxRounds, 0);
 });
