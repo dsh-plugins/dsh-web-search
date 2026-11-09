@@ -1,0 +1,44 @@
+import { test } from 'node:test';
+import assert from 'node:assert/strict';
+import { resolvePluginConfig } from '../lib/config.js';
+
+test('空配置回退到默认值', () => {
+  const config = resolvePluginConfig(undefined);
+  assert.equal(config.search.enabled, true);
+  assert.equal(config.search.engine, 'bing');
+  assert.equal(config.fetch.enabled, true);
+  assert.equal(config.browser.kind, 'auto');
+  assert.equal(config.browser.headless, true);
+  assert.equal(config.analysis.route, undefined);
+  assert.equal(config.subagent.enabled, true);
+  assert.equal(config.subagent.maxRounds, 2);
+});
+
+test('非法取值回退默认值，数值裁剪到范围内', () => {
+  const config = resolvePluginConfig({
+    search: { enabled: false, engine: 'yahoo', maxResults: 999, timeoutMs: -5 },
+    browser: { kind: 'netscape', executablePath: '  C:\\chrome.exe  ', headless: false },
+  });
+  assert.equal(config.search.enabled, false);
+  assert.equal(config.search.engine, 'bing');
+  assert.equal(config.search.maxResults, 50);
+  assert.equal(config.search.timeoutMs, 1000);
+  assert.equal(config.browser.kind, 'auto');
+  assert.equal(config.browser.executablePath, 'C:\\chrome.exe');
+  assert.equal(config.browser.headless, false);
+});
+
+test('模型选择解析为路由；半配置视为未选择', () => {
+  const config = resolvePluginConfig({
+    analysis: { selection: { provider: 'p', model: 'm', reasoningEffort: 'high' } },
+    subagent: { selection: { provider: 'p2', model: '' } },
+  });
+  assert.deepEqual(config.analysis.route, { provider: 'p', model: 'm', reasoningEffort: 'high' });
+  assert.equal(config.subagent.route, undefined);
+});
+
+test('解析结果是冻结的', () => {
+  const config = resolvePluginConfig(undefined);
+  assert.ok(Object.isFrozen(config));
+  assert.ok(Object.isFrozen(config.search));
+});
