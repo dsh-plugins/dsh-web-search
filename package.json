@@ -1,6 +1,6 @@
 {
   "name": "@dsh-plugin/dsh-web-search",
-  "version": "0.1.0",
+  "version": "2.0.0",
   "description": "Browser-backed web_search and web_fetch tools for DeepSeek Harness: real Chromium/Firefox/WebKit pages via Playwright, analyzed by a configured model, with optional subagent page interaction.",
   "type": "module",
   "main": "lib/index.js",
