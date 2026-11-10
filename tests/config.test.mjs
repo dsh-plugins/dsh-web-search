@@ -7,11 +7,15 @@ test('空配置回退到默认值', () => {
   assert.equal(config.search.enabled, true);
   assert.equal(config.search.engine, 'bing');
   assert.equal(config.fetch.enabled, true);
+  assert.equal(config.fetch.mode, 'model');
+  assert.equal(config.search.fallbackEngine, undefined);
+  assert.equal(config.search.summarize, false);
+  assert.equal(config.browser.persistentProfileDir, '');
   assert.equal(config.browser.kind, 'auto');
   assert.equal(config.browser.headless, true);
   assert.equal(config.analysis.route, undefined);
   assert.equal(config.subagent.enabled, true);
-  assert.equal(config.subagent.maxRounds, -1);
+  assert.equal(config.subagent.maxRounds, 3);
   assert.equal(config.analysis.maxTokens, 38400);
 });
 
@@ -49,4 +53,18 @@ test('子代理轮数：-1 保留表示无限制，0 表示禁用，越界裁剪
   assert.equal(resolvePluginConfig({ subagent: { maxRounds: 0 } }).subagent.maxRounds, 0);
   assert.equal(resolvePluginConfig({ subagent: { maxRounds: 999 } }).subagent.maxRounds, 100);
   assert.equal(resolvePluginConfig({ subagent: { maxRounds: -5 } }).subagent.maxRounds, 0);
+});
+
+test('独立解析备用引擎、单次预算及人工验证设置', () => {
+  const config = resolvePluginConfig({
+    search: { fallbackEngine: 'sogou', engineTimeoutMs: { baidu: 3500, bing: -1 } },
+    fetch: { mode: 'text' },
+    browser: { persistentProfileDir: ' /tmp/example ', challengeWaitMs: 5000 },
+  });
+  assert.equal(config.search.fallbackEngine, 'sogou');
+  assert.equal(config.search.engineTimeoutMs.baidu, 3500);
+  assert.equal(config.search.engineTimeoutMs.bing, 0);
+  assert.equal(config.fetch.mode, 'text');
+  assert.equal(config.browser.persistentProfileDir, '/tmp/example');
+  assert.equal(config.browser.challengeWaitMs, 5000);
 });

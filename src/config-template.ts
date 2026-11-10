@@ -46,18 +46,24 @@ export function createConfigTemplate() {
     id: PLUGIN_ID,
     packageName: PLUGIN_NAME,
     title: '网页搜索（浏览器）',
-    description: '基于真实浏览器的 web_search / web_fetch：搜索引擎与目标页面在本机浏览器中打开，页面 HTML 由配置的模型分析后返回结构化结果。',
+    description: '通过本机浏览器执行 browser_web_search 和 browser_web_fetch，支持结果直提、正文整理和专用浏览器目录。',
     fields: [
       object('search', '网页搜索', [
-        { type: 'boolean', key: 'enabled', label: '启用 web_search', default: true, description: '启用后向各会话提供浏览器版 web_search，并隐藏官方同名工具。' },
+        { type: 'boolean', key: 'enabled', label: '启用 browser_web_search', default: true },
         { type: 'select', key: 'engine', label: '默认搜索引擎', default: 'bing', options: ENGINE_OPTIONS, description: '工具调用时可另行指定。' },
+        { type: 'select', key: 'fallbackEngine', label: '备用搜索引擎', default: 'none', options: [{ label: '关闭', value: 'none' }, ...ENGINE_OPTIONS], description: '仅在工具调用未指定引擎且默认引擎被拦截、超时或无结果时尝试一次。' },
+        object('engineTimeoutMs', '单次搜索预算（毫秒）', ENGINE_OPTIONS.map(({ label, value }) => ({
+          type: 'number', key: value, label, default: 0, min: 0, max: MAX_TIMER_DELAY_MS,
+        })), '0 表示使用浏览器导航超时。'),
+        { type: 'boolean', key: 'summarize', label: '生成搜索结果摘要', default: false },
         { type: 'number', key: 'maxResults', label: '结果数量上限', default: DEFAULT_MAX_RESULTS, min: 1, max: 50 },
         { type: 'number', key: 'timeoutMs', label: '整体超时（毫秒）', default: DEFAULT_SEARCH_TIMEOUT_MS, min: 1000, max: MAX_TIMER_DELAY_MS },
       ]),
       object('fetch', '网页抓取', [
-        { type: 'boolean', key: 'enabled', label: '启用 web_fetch', default: true, description: '启用后向各会话提供浏览器版 web_fetch，并隐藏官方同名工具。' },
+        { type: 'boolean', key: 'enabled', label: '启用 browser_web_fetch', default: true },
         { type: 'number', key: 'timeoutMs', label: '整体超时（毫秒）', default: DEFAULT_FETCH_TIMEOUT_MS, min: 1000, max: MAX_TIMER_DELAY_MS },
-        { type: 'number', key: 'maxMarkdownChars', label: 'Markdown 输出上限（字符）', default: DEFAULT_MAX_MARKDOWN_CHARS, min: 1000, max: 2000000 },
+        { type: 'select', key: 'mode', label: '默认抓取模式', default: 'model', options: [{ label: '模型整理为 Markdown', value: 'model' }, { label: '直接提取纯文本', value: 'text' }] },
+        { type: 'number', key: 'maxMarkdownChars', label: '正文输出上限（字符）', default: DEFAULT_MAX_MARKDOWN_CHARS, min: 1000, max: 2000000 },
       ]),
       object('browser', '浏览器', [
         { type: 'select', key: 'kind', label: '浏览器类型', default: 'auto', options: BROWSER_OPTIONS },
@@ -66,7 +72,9 @@ export function createConfigTemplate() {
           description: '浏览器可执行文件的绝对路径（如 Chrome / Edge / Chromium 主程序）。留空时自动搜索：Chromium 依次尝试本机 Chrome、Edge 与 Playwright 缓存的浏览器；Firefox 与 WebKit 使用 Playwright 缓存版本（可用 npx playwright install firefox webkit 安装）。',
         },
         { type: 'boolean', key: 'headless', label: '无头模式', default: true, description: '关闭后弹出可见浏览器窗口，便于观察页面交互过程。' },
-        { type: 'number', key: 'settleMs', label: '加载后静置（毫秒）', default: DEFAULT_SETTLE_MS, min: 0, max: 30000, description: '页面 load 事件后额外等待的时间，用于等搜索结果渲染。' },
+        { type: 'text', key: 'persistentProfileDir', label: '专用浏览器目录', default: '', description: '留空时每次调用隔离。填写空目录或尚不存在的绝对路径，同一个 DSH profile 中的会话共享站点 Cookie。' },
+        { type: 'number', key: 'challengeWaitMs', label: '人工验证等待（毫秒）', default: 0, min: 0, max: 120000, description: '仅在使用专用浏览器目录且关闭无头模式时生效。0 表示遇到挑战立即返回。' },
+        { type: 'number', key: 'settleMs', label: '加载后静置（毫秒）', default: DEFAULT_SETTLE_MS, min: 0, max: 30000, description: '页面状态变化后最多等待的稳定时间。已识别到内容或挑战时可提前结束。' },
         { type: 'number', key: 'launchTimeoutMs', label: '启动超时（毫秒）', default: DEFAULT_LAUNCH_TIMEOUT_MS, min: 1000, max: 300000 },
         { type: 'number', key: 'navigationTimeoutMs', label: '导航超时（毫秒）', default: DEFAULT_NAVIGATION_TIMEOUT_MS, min: 1000, max: 300000 },
       ], '自动搜索本机可用的浏览器，也可指定可执行文件路径。'),
@@ -76,7 +84,7 @@ export function createConfigTemplate() {
         { type: 'number', key: 'maxHtmlChars', label: 'HTML 输入上限（字符）', default: DEFAULT_MAX_HTML_CHARS, min: 2000, max: 2000000, description: '送入模型的页面 HTML 长度上限，超出后截断。' },
       ]),
       object('subagent', '子代理页面操作', [
-        { type: 'boolean', key: 'enabled', label: '允许子代理操作页面', default: true, description: '当分析模型判断页面需要点击、输入等交互时，派出子代理使用浏览器工具操作页面后重新分析。' },
+        { type: 'boolean', key: 'enabled', label: '允许子代理操作页面', default: true, description: '模型抓取遇到普通交互时可以派出子代理。验证码由浏览器状态单独处理。' },
         { type: 'model', key: 'selection', label: '子代理模型', default: null, description: '留空时子代理沿用发起会话的模型。' },
         { type: 'number', key: 'maxRounds', label: '交互轮数上限', default: DEFAULT_MAX_SUBAGENT_ROUNDS, min: -1, max: 100, description: '单次工具调用最多允许的「子代理操作 → 重新分析」轮数；-1 表示不限制，0 表示不派出子代理。' },
       ]),

@@ -7,7 +7,15 @@
  * @module dsh-web-search/config
  */
 import type { ConfigModelValue } from '@dsh-plugin/dsh-loader/config';
-import { deepFreeze } from './dsh.js';
+function deepFreeze<T>(value: T): T {
+  if (value !== null && typeof value === 'object' && !Object.isFrozen(value)) {
+    Object.freeze(value);
+    for (const child of Object.values(value)) {
+      deepFreeze(child);
+    }
+  }
+  return value;
+}
 
 /** Cordis 插件名 / npm 包名，用于日志定位与消息来源标记。 */
 export const PLUGIN_NAME = '@dsh-plugin/dsh-web-search';
@@ -17,6 +25,8 @@ export const PLUGIN_ID = 'dsh-web-search';
 
 export const SEARCH_ENGINES = ['baidu', 'sogou', 'bing', 'google'] as const;
 export type SearchEngine = (typeof SEARCH_ENGINES)[number];
+export const FETCH_MODES = ['model', 'text'] as const;
+export type FetchMode = (typeof FETCH_MODES)[number];
 
 export const BROWSER_KINDS = ['auto', 'chromium', 'firefox', 'webkit'] as const;
 export type BrowserKind = (typeof BROWSER_KINDS)[number];
@@ -30,8 +40,7 @@ export const DEFAULT_MAX_HTML_CHARS = 200000;
 export const DEFAULT_SETTLE_MS = 1500;
 export const DEFAULT_LAUNCH_TIMEOUT_MS = 30000;
 export const DEFAULT_NAVIGATION_TIMEOUT_MS = 45000;
-/** 子代理交互轮数默认值：-1 表示不限制轮数。 */
-export const DEFAULT_MAX_SUBAGENT_ROUNDS = -1;
+export const DEFAULT_MAX_SUBAGENT_ROUNDS = 3;
 export const MAX_TIMER_DELAY_MS = 2147483647;
 
 /** 已解析的模型路由（provider + model + 可选推理等级）。 */
@@ -46,11 +55,15 @@ export interface PluginConfig {
   search: {
     enabled: boolean;
     engine: SearchEngine;
+    fallbackEngine: SearchEngine | 'none';
+    engineTimeoutMs: Partial<Record<SearchEngine, number>>;
+    summarize: boolean;
     maxResults: number;
     timeoutMs: number;
   };
   fetch: {
     enabled: boolean;
+    mode: FetchMode;
     timeoutMs: number;
     maxMarkdownChars: number;
   };
@@ -58,6 +71,8 @@ export interface PluginConfig {
     kind: BrowserKind;
     executablePath: string;
     headless: boolean;
+    persistentProfileDir: string;
+    challengeWaitMs: number;
     settleMs: number;
     launchTimeoutMs: number;
     navigationTimeoutMs: number;
@@ -79,11 +94,15 @@ export interface ResolvedPluginConfig {
   readonly search: {
     readonly enabled: boolean;
     readonly engine: SearchEngine;
+    readonly fallbackEngine: SearchEngine | undefined;
+    readonly engineTimeoutMs: Readonly<Record<SearchEngine, number>>;
+    readonly summarize: boolean;
     readonly maxResults: number;
     readonly timeoutMs: number;
   };
   readonly fetch: {
     readonly enabled: boolean;
+    readonly mode: FetchMode;
     readonly timeoutMs: number;
     readonly maxMarkdownChars: number;
   };
@@ -91,6 +110,8 @@ export interface ResolvedPluginConfig {
     readonly kind: BrowserKind;
     readonly executablePath: string;
     readonly headless: boolean;
+    readonly persistentProfileDir: string;
+    readonly challengeWaitMs: number;
     readonly settleMs: number;
     readonly launchTimeoutMs: number;
     readonly navigationTimeoutMs: number;
@@ -136,22 +157,34 @@ export function routeOf(selection: ConfigModelValue | null | undefined): Resolve
 }
 
 /** 解析并冻结一份不受信任的配置快照；非法取值回退到默认值而不是拒绝加载。 */
-export function resolvePluginConfig(config: Partial<PluginConfig> | undefined): ResolvedPluginConfig {
-  const search = config?.search ?? ({} as PluginConfig['search']);
-  const fetchCfg = config?.fetch ?? ({} as PluginConfig['fetch']);
-  const browser = config?.browser ?? ({} as PluginConfig['browser']);
-  const analysis = config?.analysis ?? ({} as PluginConfig['analysis']);
-  const subagent = config?.subagent ?? ({} as PluginConfig['subagent']);
+export function resolvePluginConfig(config: { [K in keyof PluginConfig]?: Partial<PluginConfig[K]> } | undefined): ResolvedPluginConfig {
+  const search = config?.search ?? {};
+  const fetchCfg = config?.fetch ?? {};
+  const browser = config?.browser ?? {};
+  const analysis = config?.analysis ?? {};
+  const subagent = config?.subagent ?? {};
+
+  const engineTimeout = (engine: SearchEngine): number =>
+    intInRange(search.engineTimeoutMs?.[engine], 0, 0, MAX_TIMER_DELAY_MS);
 
   return deepFreeze<ResolvedPluginConfig>({
     search: {
       enabled: search.enabled ?? true,
       engine: isEngine(search.engine) ? search.engine : 'bing',
+      fallbackEngine: isEngine(search.fallbackEngine) ? search.fallbackEngine : undefined,
+      engineTimeoutMs: {
+        baidu: engineTimeout('baidu'),
+        sogou: engineTimeout('sogou'),
+        bing: engineTimeout('bing'),
+        google: engineTimeout('google'),
+      },
+      summarize: search.summarize === true,
       maxResults: intInRange(search.maxResults, DEFAULT_MAX_RESULTS, 1, 50),
       timeoutMs: intInRange(search.timeoutMs, DEFAULT_SEARCH_TIMEOUT_MS, 1000, MAX_TIMER_DELAY_MS),
     },
     fetch: {
       enabled: fetchCfg.enabled ?? true,
+      mode: fetchCfg.mode === 'text' ? 'text' : 'model',
       timeoutMs: intInRange(fetchCfg.timeoutMs, DEFAULT_FETCH_TIMEOUT_MS, 1000, MAX_TIMER_DELAY_MS),
       maxMarkdownChars: intInRange(fetchCfg.maxMarkdownChars, DEFAULT_MAX_MARKDOWN_CHARS, 1000, 2000000),
     },
@@ -159,6 +192,8 @@ export function resolvePluginConfig(config: Partial<PluginConfig> | undefined): 
       kind: isBrowserKind(browser.kind) ? browser.kind : 'auto',
       executablePath: typeof browser.executablePath === 'string' ? browser.executablePath.trim() : '',
       headless: browser.headless ?? true,
+      persistentProfileDir: typeof browser.persistentProfileDir === 'string' ? browser.persistentProfileDir.trim() : '',
+      challengeWaitMs: intInRange(browser.challengeWaitMs, 0, 0, 120000),
       settleMs: intInRange(browser.settleMs, DEFAULT_SETTLE_MS, 0, 30000),
       launchTimeoutMs: intInRange(browser.launchTimeoutMs, DEFAULT_LAUNCH_TIMEOUT_MS, 1000, 300000),
       navigationTimeoutMs: intInRange(browser.navigationTimeoutMs, DEFAULT_NAVIGATION_TIMEOUT_MS, 1000, 300000),

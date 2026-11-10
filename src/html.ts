@@ -47,3 +47,13 @@ function extractInPage(maxChars: number): { url: string; title: string; html: st
 export async function captureSnapshot(page: Page, maxHtmlChars: number): Promise<PageSnapshot> {
   return page.evaluate(extractInPage, maxHtmlChars);
 }
+
+/** 直接提取可见正文，避免为纯文本路径复制页面 HTML。 */
+export async function captureText(page: Page, maxChars: number): Promise<{ text: string; truncated: boolean }> {
+  return page.evaluate((limit) => {
+    const candidates = Array.from(document.querySelectorAll<HTMLElement>('main article, main, article, [role="main"]'));
+    const main = candidates.find((element) => element.getClientRects().length > 0 && element.innerText.trim().length > 0);
+    const text = (main?.innerText ?? document.body?.innerText ?? '').replace(/\n{3,}/g, '\n\n').trim();
+    return { text: text.slice(0, limit), truncated: text.length > limit };
+  }, maxChars);
+}

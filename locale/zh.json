@@ -1,6 +1,6 @@
 {
   "meta": {
     "title": "网页搜索（浏览器）",
-    "description": "用真实浏览器（Chromium/Firefox/WebKit）执行 web_search 与 web_fetch：页面加载后抓取 HTML，交由配置的模型分析并返回结构化结果或 Markdown；需要点击等交互时可派出子代理操作页面。"
+    "description": "通过本机浏览器提供 browser_web_search 和 browser_web_fetch，支持搜索结果校验、纯文本或 Markdown 提取及专用浏览器目录。"
   }
 }

@@ -5,7 +5,7 @@
  */
 import type { Context } from '@deepseek-ai/cordis';
 import type { ContentBlock } from '@deepseek-ai/dsh-llm';
-import { dsh, llm } from './dsh.js';
+import type { DshFacade } from './dsh.js';
 import { PLUGIN_NAME, type ResolvedModelRoute, type ResolvedPluginConfig } from './config.js';
 
 /** 一次分析调用的结果：模型原文。 */
@@ -52,19 +52,21 @@ export function resolveAnalysisRoute(config: ResolvedPluginConfig, agent: Parame
 /** 调用分析模型并返回其文本输出。 */
 export async function runAnalysis(
   ctx: Context,
+  facade: DshFacade,
   prompt: string,
   route: ResolvedModelRoute,
   config: ResolvedPluginConfig,
   signal: AbortSignal,
   sessionId: string | undefined,
+  onFirstText: () => void,
 ): Promise<AnalysisReply> {
   const messages = [
-    llm().createUserMessage({
+    facade.llm.createUserMessage({
       content: [{ type: 'text', text: prompt }],
       source: { kind: 'plugin', plugin: PLUGIN_NAME },
     }),
   ];
-  const assembler = new (dsh().llm.BlockAssembler)();
+  const assembler = new facade.dsh.llm.BlockAssembler();
   const stream = ctx.llm.stream({
     provider: route.provider,
     model: route.model,
@@ -74,7 +76,13 @@ export async function runAnalysis(
     ...(sessionId !== undefined ? { sessionId } : {}),
     signal,
   } as Parameters<Context['llm']['stream']>[0]);
+  let firstText = true;
   for await (const chunk of stream) {
+    if (firstText && ((chunk.type === 'text-delta' && chunk.text.length > 0)
+      || (chunk.type === 'block-end' && chunk.block.type === 'text' && chunk.block.text.length > 0))) {
+      firstText = false;
+      onFirstText();
+    }
     assembler.push(chunk);
   }
   const finish = assembler.finish;

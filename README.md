@@ -1,56 +1,41 @@
+
 # dsh-web-search
 
-[中文文档](README.zh_CN.md)
+[简体中文](README.zh_CN.md)
 
-Browser-backed `web_search` and `web_fetch` tools for DeepSeek Harness. Pages are opened in a real local browser (Chromium / Firefox / WebKit via Playwright); after the page loads, its cleaned HTML is analyzed by a configured model which returns structured search results or Markdown. When the page needs interaction (captcha buttons, cookie dialogs, pagination), a one-shot subagent can operate the page with the `web_browser_*` tools.
+`browser_web_search` and `browser_web_fetch` use a local browser for engine-specific search, rendered pages, and optional site session reuse.
 
-## Install
+## Installation
+
+Install a compatible `dsh-loader` and this bundle in the same DSH profile. For example:
 
 ```sh
-dsh plugin --profile web add @dsh-plugin/dsh-web-search
+dsh plugin --profile desktop add @dsh-plugin/dsh-loader@2.0.0-dev.41617773595
+dsh plugin --profile desktop add @dsh-plugin/dsh-web-search
 ```
 
-The plugin is a Bundle package: installation applies `cordis.patch.yml` automatically. Restart the instance after installing.
+Restart the instance after installation. If pnpm 11 reports `ERR_PNPM_IGNORED_BUILDS` for `esbuild`, set `allowBuilds.esbuild` to the boolean `true` in that profile's `pnpm-workspace.yaml` and retry.
 
-## Features
+## Tools
 
-| Feature | Description |
+| Tool | Parameters and behavior |
 | --- | --- |
-| `web_search` | Opens the results page of 百度 / 搜狗 / Bing / Google in a real browser and returns structured results (`title` / `url` / `snippet`) plus an optional summary. |
-| `web_fetch` | Opens a URL in a real browser and converts the main content to Markdown. |
-| Browser auto-detection | Tries local Chrome → Edge → Playwright-managed Chromium, Playwright-managed Firefox and WebKit; a custom executable path can be configured. |
-| Selective enablement | Each tool can be enabled independently; while enabled, the official same-named tool is shadowed per agent scope and its prompt section is hidden. |
-| Subagent interaction | When the analysis model reports that the page needs interaction, a subagent operates the shared page via `web_browser_click` / `web_browser_type` / `web_browser_press` / `web_browser_scroll` / `web_browser_navigate` / `web_browser_back` / `web_browser_read`, then the page is re-analyzed (bounded by the round cap). |
-| Diagnostics | The settings card includes a "检测浏览器" operation that actually launches the browser and reports what worked. |
+| `browser_web_search` | Accepts `query` and optional `engine` (`bing`, `baidu`, `sogou`, `google`). Extracts organic results directly and verifies destination hosts for a simple single-domain `site:` restriction. Model summaries are opt-in. |
+| `browser_web_fetch` | Accepts an HTTP(S) `url` and optional `mode`. The default `model` mode returns Markdown. The `text` mode extracts visible body text directly. |
 
-## Configuration
+DSH's official `web_search` and `web_fetch` are available alongside these tools. Update automation that previously called the plugin under the official names to use the browser tool names.
 
-Open the plugin's settings card (plugin detail page). All values apply to subsequent calls without a restart.
+Search returns the actual engine, attempt history, and a status of `ok`, `no_results`, `blocked`, `timeout`, or `error`. Fetch uses `no_content` for an empty page. See `reason` for failure details. An optional fallback engine runs once after a blocked, timed-out, or empty search if the call omitted `engine`. A per-engine budget of `0` uses the browser navigation timeout.
 
-- **网页搜索**: enable `web_search`, default engine, max results, overall timeout.
-- **网页抓取**: enable `web_fetch`, overall timeout, Markdown output cap.
-- **浏览器**: engine kind (`auto` / `chromium` / `firefox` / `webkit`), custom executable path, headless mode, settle/navigation/launch timeouts.
-- **分析模型**: the model that analyzes page HTML. When unset, the calling session's own model route is used.
-- **子代理页面操作**: allow the analysis model to request page interaction; an optional dedicated subagent model; max interaction rounds.
+## Settings
 
-### Browser resolution order
+Saving settings on the plugin detail page applies them to later calls. Settings are stored in `<profile>/config/dsh-web-search/config.json`. Reload the plugin or restart the instance after editing that file by hand. Use `cordis.patch.yml` for plugin composition.
 
-1. **Custom path** (`browser.executablePath`): used as-is; with `kind: auto` it is tried against the Chromium, Firefox, and WebKit launchers in turn.
-2. **Chromium**: local Chrome (`channel: chrome`) → local Edge (`channel: msedge`) → Playwright-managed Chromium → common install paths.
-3. **Firefox / WebKit**: Playwright-managed builds (install with `npx playwright install firefox webkit`) → common install paths. Note: a stock system Firefox lacks Playwright's automation protocol and usually cannot be driven; Safari itself is not automatable — use Playwright's WebKit.
-
-## How it works
-
-```
-web_search(query, engine?)
-  → launch/reuse local browser → open results page → wait for load + settle
-  → capture cleaned HTML (scripts/styles/attributes stripped)
-  → analysis model → {"status":"ok", results:[...]} or {"status":"interact", task:"..."}
-  → on interact: spawn one-shot subagent (provider `spawn`) → it operates the page
-    with web_browser_* tools → re-capture → re-analyze (up to maxRounds)
-```
-
-The official `web_search` / `web_fetch` are registered globally by `dsh-base` before this plugin loads, so duplicate global registration is impossible. This plugin instead registers its same-named tools in each agent's scope on `agent/created` — the officially supported shadowing channel — so models see and invoke only this implementation while the corresponding official prompt sections are filtered out of prompt assembly.
+- **Browser.** Automatic selection tries local Chrome, Edge, managed Chromium, Firefox, and WebKit. An absolute browser executable path overrides auto detection. The settings page includes a browser probe.
+- **Model.** The caller's model is used when no analysis model is selected. Ordinary page interaction allows three delegated rounds by default. Set the limit to `0` to disable delegation or `-1` to rely on the tool timeout and page progress.
+- **Dedicated browser directory.** Each call normally uses a temporary context. To reuse site logins, set an absolute path to an empty or new directory for the plugin to initialize. Conversations in the same DSH profile share the directory's cookies. Each call owns its own tab.
+- **Manual verification.** Challenge pages return `blocked` by default. To verify in the browser, set a dedicated directory, turn off headless mode, and set a positive verification wait. The site determines whether the challenge passes.
+- **Cache.** Successful, publicly cacheable responses that set no cookies may be reused for up to 60 seconds in the same session when using temporary contexts. Saving settings clears the cache.
 
 ## Development
 
@@ -58,10 +43,9 @@ The official `web_search` / `web_fetch` are registered globally by `dsh-base` be
 npm install
 npm run typecheck
 npm test
+npm pack --dry-run
 ```
 
-Runtime code never value-imports `@deepseek-ai/*`; host symbols (`defineTool`, `deadline`, `createUserMessage`, `BlockAssembler`) are resolved through the `ctx.dshLoader` facade. Type-only imports keep compile-time fidelity.
-
-## License
+To include real-browser regression tests, set `DSH_WEB_SEARCH_TEST_BROWSER` to a local Chromium, Chrome, or Edge executable before running `npm test`.
 
 LGPL-3.0-only

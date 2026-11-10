@@ -1,19 +1,10 @@
-/**
- * 浏览器管理：自动探测本机浏览器、按需启动、页面生命周期与按会话查找。
- *
- * 使用 playwright-core（不随包下载浏览器）。启动候选顺序：
- * - 配置了 `executablePath` 时优先使用自定义路径；
- * - Chromium：本机 Chrome（channel: chrome）→ 本机 Edge（channel: msedge）→
- *   Playwright 缓存的 Chromium → 常见安装路径；
- * - Firefox / WebKit：Playwright 缓存版本 → 常见安装路径（Firefox 官方版本未包含
- *   Playwright 所需的 juggler 协议，通常不可用，仅作最后的尝试）。
- *
- * @module dsh-web-search/browser
- */
 import { existsSync } from 'node:fs';
+import { lstat, mkdir, readdir, readFile, realpath, writeFile } from 'node:fs/promises';
 import { platform } from 'node:os';
+import { isAbsolute, join } from 'node:path';
 import { chromium, firefox, webkit, type Browser, type BrowserContext, type BrowserType, type Page } from 'playwright-core';
 import type { BrowserKind, ResolvedPluginConfig } from './config.js';
+import { PageNavigation, timeLeft } from './navigation.js';
 
 type BrowserConfig = ResolvedPluginConfig['browser'];
 
@@ -39,14 +30,6 @@ export class BrowserLaunchError extends Error {
     this.name = 'BrowserLaunchError';
     this.attempts = attempts;
   }
-}
-
-/** 已打开页面的登记记录。 */
-interface PageRecord {
-  readonly sessionId: string;
-  readonly context: BrowserContext;
-  readonly page: Page;
-  lastUsed: number;
 }
 
 /** 常见系统浏览器安装路径（仅作兜底尝试；存在性先行检查）。 */
@@ -119,166 +102,407 @@ export function resolveCandidates(config: BrowserConfig): LaunchCandidate[] {
   return (['chromium', 'firefox', 'webkit'] as const).flatMap((kind) => candidatesFor(kind, config));
 }
 
-/** 配置指纹：变化时需要重启浏览器实例。 */
-function fingerprintOf(config: BrowserConfig): string {
-  return JSON.stringify([config.kind, config.executablePath, config.headless, config.launchTimeoutMs]);
+
+interface BrowserInstance {
+  readonly fingerprint: string;
+  readonly description: string;
+  readonly browser?: Browser;
+  readonly context?: BrowserContext;
+  readonly leases: Set<Promise<void>>;
+  available: boolean;
 }
 
-/** 浏览器与页面的集中管理者。 */
-export class BrowserManager {
-  private browser: Browser | undefined;
-  private browserKind: ActualBrowserKind | undefined;
-  private browserDescription = '';
-  private fingerprint = '';
-  /** 串行化启动：并发的首个调用共享同一次启动尝试。 */
-  private launchQueue: Promise<unknown> = Promise.resolve();
-  private readonly pages = new Map<string, PageRecord[]>();
-  private lastRecord: PageRecord | undefined;
-  private readonly log: (message: string) => void;
+export interface OpenPage {
+  readonly page: Page;
+  readonly navigation: PageNavigation;
+  readonly config: BrowserConfig;
+  readonly signal: AbortSignal;
+  readonly endsAt: number;
+}
 
-  constructor(logger?: { info?(message: string): void; warn?(message: string): void }) {
-    this.log = (message) => {
-      if (logger?.info) logger.info(message);
-    };
+function fingerprintOf(config: BrowserConfig): string {
+  return JSON.stringify([config.kind, config.executablePath, config.headless, config.launchTimeoutMs, config.persistentProfileDir]);
+}
+
+async function untilAbort<T>(promise: Promise<T>, signal: AbortSignal): Promise<T> {
+  signal.throwIfAborted();
+  let abort: () => void = () => {};
+  const cancelled = new Promise<never>((_resolve, reject) => {
+    abort = () => reject(signal.reason);
+    signal.addEventListener('abort', abort, { once: true });
+  });
+  try {
+    return await Promise.race([promise, cancelled]);
+  } finally {
+    signal.removeEventListener('abort', abort);
   }
+}
 
-  /** 当前持有的浏览器描述（诊断面板用）。 */
-  get activeBrowserDescription(): string | undefined {
-    return this.browser?.isConnected() ? `${this.browserKind}（${this.browserDescription}）` : undefined;
+const PROFILE_MARKER = '.dsh-web-search-profile';
+
+export class BrowserProfileError extends Error {}
+
+function candidateId(candidate: LaunchCandidate): string {
+  return JSON.stringify([candidate.kind, candidate.options.channel ?? '', candidate.options.executablePath ?? '']);
+}
+
+async function readBinding(marker: string): Promise<string> {
+  if (!(await lstat(marker)).isFile()) {
+    throw new BrowserProfileError('专用浏览器目录标记无效');
   }
+  const value = (await readFile(marker, 'utf8')).trim();
+  if (!value) {
+    throw new BrowserProfileError('专用浏览器目录正在初始化，请稍后重试');
+  }
+  return value;
+}
 
-  /** 按配置确保浏览器可用；配置变化或实例断开时重新启动。 */
-  async ensureBrowser(config: BrowserConfig, signal?: AbortSignal): Promise<Browser> {
-    const fingerprint = fingerprintOf(config);
-    if (this.browser !== undefined && this.browser.isConnected() && this.fingerprint === fingerprint) {
-      return this.browser;
+async function dedicatedDirectory(path: string): Promise<{ directory: string; binding?: string }> {
+  if (!isAbsolute(path)) {
+    throw new BrowserProfileError('专用浏览器目录必须是绝对路径');
+  }
+  await mkdir(path, { recursive: true, mode: 0o700 });
+  const entry = await lstat(path);
+  if (!entry.isDirectory() || entry.isSymbolicLink()) {
+    throw new BrowserProfileError('专用浏览器目录必须是普通目录');
+  }
+  const directory = await realpath(path);
+  const files = await readdir(directory);
+  if (files.includes(PROFILE_MARKER)) {
+    return { directory, binding: await readBinding(join(directory, PROFILE_MARKER)) };
+  }
+  if (files.length !== 0) {
+    throw new BrowserProfileError('专用浏览器目录首次使用时必须为空');
+  }
+  return { directory };
+}
+
+async function bindDirectory(directory: string, binding: string): Promise<void> {
+  const marker = join(directory, PROFILE_MARKER);
+  try {
+    await writeFile(marker, binding, { flag: 'wx' });
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== 'EEXIST') {
+      throw error;
     }
-    // 串行化：配置变化重开与并发首次启动共用同一条队列。
-    const task = this.launchQueue.then(async () => {
-      if (this.browser !== undefined && this.browser.isConnected() && this.fingerprint === fingerprint) {
-        return this.browser;
+    if (await readBinding(marker) !== binding) {
+      throw new BrowserProfileError('专用浏览器目录已绑定到另一浏览器');
+    }
+  }
+}
+
+/** 管理浏览器实例、专用目录与按会话隔离的页面。 */
+export class BrowserManager {
+  private instance: BrowserInstance | undefined;
+  private queue: Promise<void> = Promise.resolve();
+  private readonly lifetime = new AbortController();
+  private desiredFingerprint: string | null | undefined;
+  private readonly probes = new Set<Promise<string>>();
+  private readonly sessions = new Map<string, Promise<void>>();
+  private readonly pages = new Map<string, OpenPage>();
+  private readonly navigation = new WeakMap<Page, PageNavigation>();
+
+  constructor(private readonly logger?: { info?(message: string): void; warn?(message: string): void }) {}
+
+  get activeBrowserDescription(): string | undefined {
+    return this.instance?.available ? this.instance.description : undefined;
+  }
+
+  private enqueue<T>(operation: () => Promise<T>): Promise<T> {
+    const result = this.queue.then(operation);
+    this.queue = result.then(() => {}, () => {});
+    return result;
+  }
+
+  private async closeResource(resource: Browser | BrowserContext | Page | undefined): Promise<void> {
+    if (resource === undefined) {
+      return;
+    }
+    try {
+      await resource.close();
+    } catch {
+      this.logger?.warn?.('dsh-web-search phase=browser_close status=error');
+    }
+  }
+
+  private async closeInstance(): Promise<void> {
+    const previous = this.instance;
+    this.instance = undefined;
+    await this.closeResource(previous?.context ?? previous?.browser);
+  }
+
+  private async launch(config: BrowserConfig, signal: AbortSignal, endsAt: number): Promise<BrowserInstance> {
+    const profile = config.persistentProfileDir ? await dedicatedDirectory(config.persistentProfileDir) : undefined;
+    const attempts: string[] = [];
+    const candidates = resolveCandidates(config);
+    const matching = profile?.binding === undefined ? candidates : candidates.filter((candidate) => candidateId(candidate) === profile.binding);
+    if (matching.length === 0) {
+      throw new BrowserProfileError('专用浏览器目录已绑定到另一浏览器，请还原原浏览器设置或填写新的空目录');
+    }
+    for (const candidate of matching) {
+      signal.throwIfAborted();
+      const timeout = Math.min(timeLeft(endsAt), config.launchTimeoutMs);
+      if (timeout === 0) {
+        break;
       }
-      await this.close();
-      signal?.throwIfAborted();
-      const attempts: string[] = [];
-      for (const candidate of resolveCandidates(config)) {
-        signal?.throwIfAborted();
-        try {
-          const browser = await launcherOf(candidate.kind).launch(candidate.options);
-          browser.on('disconnected', () => {
-            if (this.browser === browser) {
-              this.browser = undefined;
-              this.browserKind = undefined;
-            }
+      const options = { ...candidate.options, timeout };
+      const instance: BrowserInstance = {
+        fingerprint: fingerprintOf(config), description: candidate.description, leases: new Set(), available: true,
+      };
+      let bound = profile?.binding !== undefined;
+      try {
+        const launcher = launcherOf(candidate.kind);
+        if (profile !== undefined) {
+          if (!bound) {
+            // 先确认候选可启动，再把专用目录绑定到该分发和可执行文件。
+            const probe = await launcher.launch({ ...options, headless: true });
+            await this.closeResource(probe);
+            signal.throwIfAborted();
+            await bindDirectory(profile.directory, candidateId(candidate));
+            bound = true;
+          }
+          const remaining = Math.min(timeLeft(endsAt), config.launchTimeoutMs);
+          if (remaining === 0) {
+            break;
+          }
+          const context = await launcher.launchPersistentContext(profile.directory, {
+            ...options, timeout: remaining, locale: 'zh-CN', acceptDownloads: false,
           });
-          this.browser = browser;
-          this.browserKind = candidate.kind;
-          this.browserDescription = candidate.description;
-          this.fingerprint = fingerprint;
-          this.log(`dsh-web-search: 已启动浏览器：${candidate.description}`);
-          return browser;
-        } catch (error) {
-          attempts.push(`${candidate.description}：${error instanceof Error ? error.message.split('\n')[0] : String(error)}`);
+          context.on('close', () => { instance.available = false; });
+          return Object.assign(instance, { context });
+        }
+        const browser = await launcher.launch(options);
+        browser.on('disconnected', () => { instance.available = false; });
+        return Object.assign(instance, { browser });
+      } catch (error) {
+        if (error instanceof BrowserProfileError) {
+          throw error;
+        }
+        attempts.push(candidate.description + '：' + (error instanceof Error ? error.message.split('\n')[0] : String(error)));
+        if (bound) {
+          break;
         }
       }
-      throw new BrowserLaunchError(config.kind, attempts);
-    });
-    // 失败也留在队列上并立即消化，避免后续调用拿到已拒绝的 Promise。
-    this.launchQueue = task.catch(() => {});
-    return task;
-  }
-
-  /**
-   * 在一个全新上下文中打开页面并执行回调；回调期间页面按会话登记，
-   * 供子代理的浏览器工具定位；返回后关闭上下文。
-   */
-  async withPage<T>(config: BrowserConfig, sessionId: string, signal: AbortSignal, fn: (page: Page) => Promise<T>): Promise<T> {
-    const browser = await this.ensureBrowser(config, signal);
+    }
     signal.throwIfAborted();
-    const context = await browser.newContext({ locale: 'zh-CN' });
-    const page = await context.newPage();
-    const record: PageRecord = { sessionId, context, page, lastUsed: Date.now() };
-    const stack = this.pages.get(sessionId) ?? [];
-    stack.push(record);
-    this.pages.set(sessionId, stack);
-    this.lastRecord = record;
-    const onAbort = (): void => {
-      void context.close().catch(() => {});
-    };
-    signal.addEventListener('abort', onAbort, { once: true });
+    throw new BrowserLaunchError(config.kind, attempts);
+  }
+
+  /** 发布启动配置，已有页面排空后释放旧浏览器。 */
+  configure(config: BrowserConfig | undefined): void {
+    const wanted = config === undefined ? null : fingerprintOf(config);
+    if (this.desiredFingerprint === wanted) {
+      return;
+    }
+    this.desiredFingerprint = wanted;
+    void this.enqueue(async () => {
+      const current = this.instance;
+      if (current !== undefined && current.fingerprint !== this.desiredFingerprint) {
+        await Promise.all(current.leases);
+        if (current.fingerprint !== this.desiredFingerprint) {
+          await this.closeInstance();
+        }
+      }
+    }).catch(() => this.logger?.warn?.('dsh-web-search phase=browser_configure status=error'));
+  }
+
+  private checkConfiguration(config: BrowserConfig, signal: AbortSignal): void {
+    signal.throwIfAborted();
+    if (this.desiredFingerprint !== undefined && fingerprintOf(config) !== this.desiredFingerprint) {
+      throw new BrowserProfileError('浏览器启动配置已更改，请重试');
+    }
+  }
+
+  private async matchingInstance(config: BrowserConfig, signal: AbortSignal, endsAt: number): Promise<BrowserInstance> {
+    this.checkConfiguration(config, signal);
+    if (this.instance?.available && this.instance.fingerprint === fingerprintOf(config)) {
+      return this.instance;
+    }
+    if (this.instance !== undefined) {
+      await untilAbort(Promise.all(this.instance.leases), signal);
+      await this.closeInstance();
+    }
+    this.checkConfiguration(config, signal);
+    this.instance = await this.launch(config, signal, endsAt);
+    this.checkConfiguration(config, signal);
+    return this.instance;
+  }
+
+  /** 供只需要临时浏览器进程的调用方使用。 */
+  async ensureBrowser(config: BrowserConfig, signal: AbortSignal = this.lifetime.signal): Promise<Browser> {
+    const combined = AbortSignal.any([this.lifetime.signal, signal]);
+    const instance = await this.enqueue(() => this.matchingInstance(
+      { ...config, persistentProfileDir: '' }, combined, performance.now() + config.launchTimeoutMs,
+    ));
+    return instance.browser!;
+  }
+
+  private async reserve(config: BrowserConfig, signal: AbortSignal, endsAt: number) {
+    const queued = this.enqueue(async () => {
+      const instance = await this.matchingInstance(config, signal, endsAt);
+      const lease = Promise.withResolvers<void>();
+      instance.leases.add(lease.promise);
+      const release = (): void => {
+        instance.leases.delete(lease.promise);
+        lease.resolve();
+      };
+      return { instance, release };
+    });
     try {
-      return await fn(page);
+      return await untilAbort(queued, signal);
+    } catch (error) {
+      void queued.then((reservation) => reservation.release(), () => {});
+      throw error;
+    }
+  }
+
+  private async withSession<T>(sessionId: string | undefined, signal: AbortSignal, run: () => Promise<T>): Promise<T> {
+    if (sessionId === undefined) {
+      return run();
+    }
+    const previous = this.sessions.get(sessionId) ?? Promise.resolve();
+    const slot = Promise.withResolvers<void>();
+    const tail = previous.then(() => slot.promise);
+    this.sessions.set(sessionId, tail);
+    try {
+      await untilAbort(previous, signal);
+      signal.throwIfAborted();
+      return await run();
     } finally {
-      signal.removeEventListener('abort', onAbort);
-      const current = this.pages.get(sessionId);
-      if (current !== undefined) {
-        const index = current.indexOf(record);
-        if (index >= 0) current.splice(index, 1);
-        if (current.length === 0) this.pages.delete(sessionId);
-      }
-      if (this.lastRecord === record) this.lastRecord = undefined;
-      await context.close().catch(() => {});
+      slot.resolve();
+      void tail.then(() => {
+        if (this.sessions.get(sessionId) === tail) {
+          this.sessions.delete(sessionId);
+        }
+      });
     }
   }
 
-  /**
-   * 供浏览器工具定位页面：先找调用者自己会话的页面，再找父会话的页面
-   * （子代理场景），最后退回最近活动的页面。
-   */
-  pageFor(sessionId: string | undefined, parentSessionId: string | undefined): Page | undefined {
-    const pick = (id: string | undefined): PageRecord | undefined => {
-      if (id === undefined) return undefined;
-      const stack = this.pages.get(id);
-      return stack === undefined || stack.length === 0 ? undefined : stack[stack.length - 1];
-    };
-    const record = pick(sessionId) ?? pick(parentSessionId) ?? this.lastRecord;
-    if (record === undefined || record.page.isClosed()) return undefined;
-    record.lastUsed = Date.now();
-    return record.page;
-  }
-
-  /** 打开 URL 并等待页面稳定：domcontentloaded → load → 静置 → 短暂 networkidle。 */
-  async navigate(page: Page, url: string, config: BrowserConfig): Promise<void> {
-    await page.goto(url, { waitUntil: 'domcontentloaded', timeout: config.navigationTimeoutMs });
-    await page.waitForLoadState('load', { timeout: config.navigationTimeoutMs }).catch(() => {});
-    if (config.settleMs > 0) {
-      await page.waitForTimeout(config.settleMs);
-    }
-    await page.waitForLoadState('networkidle', { timeout: 3000 }).catch(() => {});
-  }
-
-  /** 诊断：按配置实际执行一次启动探测，启动成功即刻关闭并返回报告文本。 */
-  async probe(config: BrowserConfig): Promise<string> {
-    const lines: string[] = [];
-    let ok = false;
-    for (const candidate of resolveCandidates(config)) {
+  /** 临时模式独立上下文，持久化模式独立标签页。 */
+  async withPage<T>(
+    config: BrowserConfig,
+    sessionId: string | undefined,
+    signal: AbortSignal,
+    fn: (page: Page, navigation: PageNavigation, signal: AbortSignal) => Promise<T>,
+    endsAt = performance.now() + config.launchTimeoutMs + config.navigationTimeoutMs,
+  ): Promise<T> {
+    const combined = AbortSignal.any([this.lifetime.signal, signal]);
+    return this.withSession(sessionId, combined, async () => {
+      const { instance, release } = await this.reserve(config, combined, endsAt);
+      let ownedContext: BrowserContext | undefined;
+      let page: Page | undefined;
+      let close: Promise<void> | undefined;
+      const popups = new Set<Page>();
+      const disposePage = (): Promise<void> => {
+        close ??= (async () => {
+          if (ownedContext === undefined) {
+            await this.closeResource(page);
+            await Promise.all([...popups].map((popup) => this.closeResource(popup)));
+          } else {
+            await this.closeResource(ownedContext);
+          }
+        })();
+        return close;
+      };
+      const onAbort = (): void => { void disposePage(); };
       try {
-        const browser = await launcherOf(candidate.kind).launch(candidate.options);
-        const version = browser.version();
-        await browser.close();
-        lines.push(`✔ ${candidate.description}（版本 ${version}）`);
-        ok = true;
-        break;
-      } catch (error) {
-        lines.push(`✘ ${candidate.description}：${error instanceof Error ? error.message.split('\n')[0] : String(error)}`);
+        combined.throwIfAborted();
+        if (instance.context === undefined) {
+          ownedContext = await instance.browser!.newContext({ locale: 'zh-CN', acceptDownloads: false });
+        }
+        combined.throwIfAborted();
+        page = await (instance.context ?? ownedContext!).newPage();
+        if (instance.context !== undefined) {
+          const ownPopup = (popup: Page): void => {
+            popups.add(popup);
+            popup.on('popup', ownPopup);
+          };
+          page.on('popup', ownPopup);
+        }
+        const navigation = new PageNavigation(page);
+        this.navigation.set(page, navigation);
+        if (sessionId !== undefined) {
+          this.pages.set(sessionId, { page, navigation, config, signal: combined, endsAt });
+        }
+        combined.addEventListener('abort', onAbort, { once: true });
+        combined.throwIfAborted();
+        return await fn(page, navigation, combined);
+      } finally {
+        combined.removeEventListener('abort', onAbort);
+        if (sessionId !== undefined) {
+          this.pages.delete(sessionId);
+        }
+        await disposePage();
+        release();
       }
-    }
-    if (!ok) {
-      lines.push('未找到可用浏览器。可填写自定义浏览器路径，或执行 npx playwright install chromium firefox webkit。');
-    }
-    return lines.join('\n');
+    });
   }
 
-  /** 关闭浏览器并清空页面登记（幂等）。 */
-  async close(): Promise<void> {
-    const browser = this.browser;
-    this.browser = undefined;
-    this.browserKind = undefined;
-    this.fingerprint = '';
-    this.pages.clear();
-    this.lastRecord = undefined;
-    if (browser !== undefined) {
-      await browser.close().catch(() => {});
+  /** 只解析当前会话或宿主提供的父会话。 */
+  sessionPage(sessionId: string | undefined, parentSessionId: string | undefined): OpenPage | undefined {
+    for (const id of [sessionId, parentSessionId]) {
+      const record = id === undefined ? undefined : this.pages.get(id);
+      if (record !== undefined && !record.signal.aborted && !record.page.isClosed()) {
+        return record;
+      }
     }
+    return undefined;
+  }
+
+  pageFor(sessionId: string | undefined, parentSessionId: string | undefined): Page | undefined {
+    return this.sessionPage(sessionId, parentSessionId)?.page;
+  }
+
+  async navigate(page: Page, url: string, config: BrowserConfig): Promise<void> {
+    let navigation = this.navigation.get(page);
+    if (navigation === undefined) {
+      navigation = new PageNavigation(page);
+      this.navigation.set(page, navigation);
+    }
+    const result = await navigation.open(url, config, this.lifetime.signal, performance.now() + config.navigationTimeoutMs);
+    if (result.status === 'error' || result.status === 'timeout') {
+      throw new Error(result.reason);
+    }
+  }
+
+  /** 探测可执行文件，诊断不占用持久化目录。 */
+  async probe(config: BrowserConfig, signal: AbortSignal = this.lifetime.signal): Promise<string> {
+    const probe = this.probeOnce(config, signal);
+    this.probes.add(probe);
+    try {
+      return await probe;
+    } finally {
+      this.probes.delete(probe);
+    }
+  }
+
+  private async probeOnce(config: BrowserConfig, signal: AbortSignal): Promise<string> {
+    const combined = AbortSignal.any([this.lifetime.signal, signal]);
+    try {
+      const instance = await this.launch({ ...config, persistentProfileDir: '' }, combined, performance.now() + config.launchTimeoutMs);
+      try {
+        combined.throwIfAborted();
+        return '✔ ' + instance.description + '（版本 ' + instance.browser!.version() + '）';
+      } finally {
+        await this.closeResource(instance.browser);
+      }
+    } catch (error) {
+      combined.throwIfAborted();
+      return error instanceof Error ? error.message : String(error);
+    }
+  }
+
+  async close(): Promise<void> {
+    await this.enqueue(async () => {
+      if (this.instance !== undefined) {
+        await Promise.all(this.instance.leases);
+        await this.closeInstance();
+      }
+    });
+  }
+
+  async dispose(): Promise<void> {
+    this.lifetime.abort();
+    await Promise.all([this.close(), Promise.allSettled(this.probes)]);
   }
 }

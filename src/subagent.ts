@@ -12,18 +12,6 @@ import type { SubagentRuntime, SubagentStartRequest } from '@deepseek-ai/dsh-sub
 import type { ResolvedModelRoute } from './config.js';
 import { buildSubagentPrompt } from './prompt.js';
 
-let runtime: SubagentRuntime | undefined;
-
-/** 由入口在 `subagents` 服务可用时注入。 */
-export function setSubagentRuntime(value: SubagentRuntime | undefined): void {
-  runtime = value;
-}
-
-/** 子代理能力是否可用。 */
-export function subagentAvailable(): boolean {
-  return runtime !== undefined;
-}
-
 /** 提取子代理最终输出中的文本。 */
 function outputText(output: readonly ContentBlock[]): string {
   return output
@@ -40,17 +28,12 @@ function outputText(output: readonly ContentBlock[]): string {
  * @param route - 配置的子代理模型路由；undefined 时沿用父代理路由。
  */
 export async function runPageSubagent(
-  parent: Agent | undefined,
+  runtime: SubagentRuntime,
+  parent: Agent,
   task: string,
   route: ResolvedModelRoute | undefined,
   signal: AbortSignal,
 ): Promise<string> {
-  if (runtime === undefined) {
-    throw new Error('dsh-web-search: 当前部署没有 subagents 服务，无法派出子代理');
-  }
-  if (parent === undefined) {
-    throw new Error('dsh-web-search: 当前调用不隶属于任何 Agent，无法派出子代理');
-  }
   const prompt = buildSubagentPrompt(task);
   const base: SubagentStartRequest = {
     label: 'dsh-web-search 页面操作',
@@ -70,7 +53,10 @@ export async function runPageSubagent(
       },
     });
   } catch (error) {
-    if (route === undefined) throw error;
+    signal.throwIfAborted();
+    if (route === undefined) {
+      throw error;
+    }
     run = await runtime.start('spawn', base);
   }
   try {

@@ -1,6 +1,6 @@
 {
   "meta": {
     "title": "Web Search (Browser)",
-    "description": "Browser-backed web_search and web_fetch: loads pages in a real Chromium/Firefox/WebKit browser via Playwright, lets a configured model analyze the HTML, and can delegate page interaction to a subagent."
+    "description": "Local browser tools browser_web_search and browser_web_fetch with validated search results, text or Markdown extraction, and optional dedicated browser storage."
   }
 }
