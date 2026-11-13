@@ -52,11 +52,11 @@ export function buildFetchAnalysisPrompt(input: {
 }
 
 /** 构造页面操作子代理的任务提示词。 */
-export function buildSubagentPrompt(task: string): string {
+export function buildSubagentPrompt(task: string, pageId: string): string {
   return [
     '你是一名浏览器操作子代理。一个真实浏览器页面已经打开（由父代理的 browser_web_fetch 工具打开）。',
-    '你可以使用以下工具操作该页面：',
-    '- web_browser_read：读取当前页面的地址、标题与纯文本内容；',
+    `目标页面的句柄 ID 是 "${pageId}"；调用以下任何工具时都必须把 id 参数设为该值：`,
+    '- web_browser_read：读取页面的地址、标题与内容（format 为 text 或 dom）；',
     '- web_browser_click：点击匹配 CSS 选择器的元素；',
     '- web_browser_type：在输入框中输入文本，可选回车提交；',
     '- web_browser_press：按下键盘按键（如 Enter、Escape）；',

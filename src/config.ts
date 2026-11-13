@@ -42,6 +42,10 @@ export const DEFAULT_LAUNCH_TIMEOUT_MS = 30000;
 export const DEFAULT_NAVIGATION_TIMEOUT_MS = 45000;
 export const DEFAULT_MAX_SUBAGENT_ROUNDS = 3;
 export const MAX_TIMER_DELAY_MS = 2147483647;
+/** `browser_web_open` 与 search/fetch `timeout` 参数的默认页面保留时长（秒）。 */
+export const DEFAULT_PAGE_RETENTION_S = 600;
+/** 页面保留时长上限（秒）。 */
+export const MAX_PAGE_RETENTION_S = 86400;
 
 /** 已解析的模型路由（provider + model + 可选推理等级）。 */
 export interface ResolvedModelRoute {
@@ -60,12 +64,16 @@ export interface PluginConfig {
     summarize: boolean;
     maxResults: number;
     timeoutMs: number;
+    /** 启用 browser_web_search 时是否遮蔽官方 web_search。 */
+    disableOfficial: boolean;
   };
   fetch: {
     enabled: boolean;
     mode: FetchMode;
     timeoutMs: number;
     maxMarkdownChars: number;
+    /** 启用 browser_web_fetch 时是否遮蔽官方 web_fetch。 */
+    disableOfficial: boolean;
   };
   browser: {
     kind: BrowserKind;
@@ -99,12 +107,14 @@ export interface ResolvedPluginConfig {
     readonly summarize: boolean;
     readonly maxResults: number;
     readonly timeoutMs: number;
+    readonly disableOfficial: boolean;
   };
   readonly fetch: {
     readonly enabled: boolean;
     readonly mode: FetchMode;
     readonly timeoutMs: number;
     readonly maxMarkdownChars: number;
+    readonly disableOfficial: boolean;
   };
   readonly browser: {
     readonly kind: BrowserKind;
@@ -139,6 +149,11 @@ function isBrowserKind(value: unknown): value is BrowserKind {
 function intInRange(value: unknown, fallback: number, min: number, max: number): number {
   if (typeof value !== 'number' || !Number.isFinite(value)) return fallback;
   return Math.min(max, Math.max(min, Math.floor(value)));
+}
+
+/** 解析页面保留时长参数（秒）为毫秒；非法值回退默认 600 秒，0 表示不保留。 */
+export function retentionMsOf(value: unknown): number {
+  return intInRange(value, DEFAULT_PAGE_RETENTION_S, 0, MAX_PAGE_RETENTION_S) * 1000;
 }
 
 /** 把模型选择器值解析为路由；未选择时返回 undefined。 */
@@ -181,12 +196,14 @@ export function resolvePluginConfig(config: { [K in keyof PluginConfig]?: Partia
       summarize: search.summarize === true,
       maxResults: intInRange(search.maxResults, DEFAULT_MAX_RESULTS, 1, 50),
       timeoutMs: intInRange(search.timeoutMs, DEFAULT_SEARCH_TIMEOUT_MS, 1000, MAX_TIMER_DELAY_MS),
+      disableOfficial: search.disableOfficial ?? true,
     },
     fetch: {
       enabled: fetchCfg.enabled ?? true,
       mode: fetchCfg.mode === 'text' ? 'text' : 'model',
       timeoutMs: intInRange(fetchCfg.timeoutMs, DEFAULT_FETCH_TIMEOUT_MS, 1000, MAX_TIMER_DELAY_MS),
       maxMarkdownChars: intInRange(fetchCfg.maxMarkdownChars, DEFAULT_MAX_MARKDOWN_CHARS, 1000, 2000000),
+      disableOfficial: fetchCfg.disableOfficial ?? true,
     },
     browser: {
       kind: isBrowserKind(browser.kind) ? browser.kind : 'auto',

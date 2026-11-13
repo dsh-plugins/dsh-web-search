@@ -1,10 +1,11 @@
+import { randomBytes } from 'node:crypto';
 import { existsSync } from 'node:fs';
 import { lstat, mkdir, readdir, readFile, realpath, writeFile } from 'node:fs/promises';
 import { platform } from 'node:os';
 import { isAbsolute, join } from 'node:path';
 import { chromium, firefox, webkit, type Browser, type BrowserContext, type BrowserType, type Page } from 'playwright-core';
-import type { BrowserKind, ResolvedPluginConfig } from './config.js';
-import { PageNavigation, timeLeft } from './navigation.js';
+import { MAX_TIMER_DELAY_MS, type BrowserKind, type ResolvedPluginConfig, type SearchEngine } from './config.js';
+import { PageNavigation, timeLeft, type PageObservation } from './navigation.js';
 
 type BrowserConfig = ResolvedPluginConfig['browser'];
 
@@ -112,12 +113,36 @@ interface BrowserInstance {
   available: boolean;
 }
 
-export interface OpenPage {
+/** 由 `browser_web_open` / `browser_web_search` / `browser_web_fetch` 打开并保留的页面句柄。 */
+export interface RetainedPage {
+  /** 页面句柄 ID，供 `web_browser_*` 工具的 `id` 参数使用。 */
+  readonly id: string;
   readonly page: Page;
   readonly navigation: PageNavigation;
   readonly config: BrowserConfig;
+  /** 页面生命周期信号：页面被关闭（空闲超时、手动回收、配置变更、插件卸载）时 abort。 */
   readonly signal: AbortSignal;
-  readonly endsAt: number;
+}
+
+/** 保留页面注册表条目（在 RetainedPage 基础上附带回收所需的内部状态）。 */
+interface RetainedEntry extends RetainedPage {
+  readonly controller: AbortController;
+  readonly disposePage: () => Promise<void>;
+  readonly releaseLease: () => void;
+  /** 空闲保留时长（毫秒）；0 表示不保留，由调用方用完立即关闭。 */
+  timeoutMs: number;
+  timer?: NodeJS.Timeout;
+  /** 同一页面上的操作串行化链。 */
+  chain: Promise<void>;
+  /** 进行中的操作数；大于 0 时暂停空闲计时。 */
+  operations: number;
+  closed: boolean;
+}
+
+/** `openRetainedPage` 的返回句柄：保留页面加上首次导航的观察结果。 */
+export interface OpenedPage extends RetainedPage {
+  /** 传入 `url` 时的首次导航观察结果（含被拦截、挑战等非 ready 状态）；打开空白页时为 undefined。 */
+  readonly observation?: PageObservation;
 }
 
 function fingerprintOf(config: BrowserConfig): string {
@@ -191,16 +216,14 @@ async function bindDirectory(directory: string, binding: string): Promise<void> 
   }
 }
 
-/** 管理浏览器实例、专用目录与按会话隔离的页面。 */
+/** 管理浏览器实例、专用目录与按 ID 寻址的保留页面。 */
 export class BrowserManager {
   private instance: BrowserInstance | undefined;
   private queue: Promise<void> = Promise.resolve();
   private readonly lifetime = new AbortController();
   private desiredFingerprint: string | null | undefined;
   private readonly probes = new Set<Promise<string>>();
-  private readonly sessions = new Map<string, Promise<void>>();
-  private readonly pages = new Map<string, OpenPage>();
-  private readonly navigation = new WeakMap<Page, PageNavigation>();
+  private readonly retained = new Map<string, RetainedEntry>();
 
   constructor(private readonly logger?: { info?(message: string): void; warn?(message: string): void }) {}
 
@@ -288,7 +311,7 @@ export class BrowserManager {
     throw new BrowserLaunchError(config.kind, attempts);
   }
 
-  /** 发布启动配置，已有页面排空后释放旧浏览器。 */
+  /** 发布启动配置；配置变化时先回收保留页面，再排空并释放旧浏览器。 */
   configure(config: BrowserConfig | undefined): void {
     const wanted = config === undefined ? null : fingerprintOf(config);
     if (this.desiredFingerprint === wanted) {
@@ -296,6 +319,8 @@ export class BrowserManager {
     }
     this.desiredFingerprint = wanted;
     void this.enqueue(async () => {
+      // 保留页面持有长租约：先全部回收，旧浏览器才能及时退出。
+      await this.closeAllRetained();
       const current = this.instance;
       if (current !== undefined && current.fingerprint !== this.desiredFingerprint) {
         await Promise.all(current.leases);
@@ -356,113 +381,191 @@ export class BrowserManager {
     }
   }
 
-  private async withSession<T>(sessionId: string | undefined, signal: AbortSignal, run: () => Promise<T>): Promise<T> {
-    if (sessionId === undefined) {
-      return run();
-    }
-    const previous = this.sessions.get(sessionId) ?? Promise.resolve();
-    const slot = Promise.withResolvers<void>();
-    const tail = previous.then(() => slot.promise);
-    this.sessions.set(sessionId, tail);
-    try {
-      await untilAbort(previous, signal);
-      signal.throwIfAborted();
-      return await run();
-    } finally {
-      slot.resolve();
-      void tail.then(() => {
-        if (this.sessions.get(sessionId) === tail) {
-          this.sessions.delete(sessionId);
-        }
-      });
-    }
-  }
-
   /** 临时模式独立上下文，持久化模式独立标签页。 */
-  async withPage<T>(
+  private async acquirePage(
     config: BrowserConfig,
-    sessionId: string | undefined,
     signal: AbortSignal,
-    fn: (page: Page, navigation: PageNavigation, signal: AbortSignal) => Promise<T>,
-    endsAt = performance.now() + config.launchTimeoutMs + config.navigationTimeoutMs,
-  ): Promise<T> {
+    endsAt: number,
+  ): Promise<{ page: Page; navigation: PageNavigation; disposePage: () => Promise<void>; release: () => void }> {
+    const { instance, release } = await this.reserve(config, signal, endsAt);
+    let ownedContext: BrowserContext | undefined;
+    let page: Page | undefined;
+    let close: Promise<void> | undefined;
+    const popups = new Set<Page>();
+    const disposePage = (): Promise<void> => {
+      close ??= (async () => {
+        if (ownedContext === undefined) {
+          await this.closeResource(page);
+          await Promise.all([...popups].map((popup) => this.closeResource(popup)));
+        } else {
+          await this.closeResource(ownedContext);
+        }
+      })();
+      return close;
+    };
+    try {
+      signal.throwIfAborted();
+      if (instance.context === undefined) {
+        ownedContext = await instance.browser!.newContext({ locale: 'zh-CN', acceptDownloads: false });
+      }
+      signal.throwIfAborted();
+      page = await (instance.context ?? ownedContext!).newPage();
+      if (instance.context !== undefined) {
+        const ownPopup = (popup: Page): void => {
+          popups.add(popup);
+          popup.on('popup', ownPopup);
+        };
+        page.on('popup', ownPopup);
+      }
+      const navigation = new PageNavigation(page);
+      signal.throwIfAborted();
+      return { page, navigation, disposePage, release };
+    } catch (error) {
+      await disposePage();
+      release();
+      throw error;
+    }
+  }
+
+  private armRetained(entry: RetainedEntry): void {
+    if (entry.timer !== undefined) {
+      clearTimeout(entry.timer);
+      entry.timer = undefined;
+    }
+    if (entry.closed || entry.operations > 0 || entry.timeoutMs <= 0) {
+      return;
+    }
+    entry.timer = setTimeout(() => {
+      void this.closeRetained(entry.id).catch(() => this.logger?.warn?.('dsh-web-search phase=retained_close status=error'));
+    }, Math.min(entry.timeoutMs, MAX_TIMER_DELAY_MS));
+    entry.timer.unref?.();
+  }
+
+  /**
+   * 打开并保留一个页面，返回句柄与首次导航观察结果。
+   *
+   * 页面在 `timeoutMs` 毫秒内没有任何操作时自动关闭；`timeoutMs` 为 0 时不启动
+   * 空闲计时，由调用方用完后自行 `closeRetained`。`url` 省略时打开空白页；
+   * 导航被拦截、超时等结果通过 `observation` 返回而不抛错，仅启动/获取页面
+   * 失败才抛错（此时页面已回收）。
+   */
+  async openRetainedPage(
+    config: BrowserConfig,
+    options: {
+      readonly url?: string;
+      readonly timeoutMs: number;
+      /** 首次导航的截止时间（performance.now() 基准）；缺省按导航超时计算。 */
+      readonly endsAt?: number;
+      /** 搜索引擎标识，用于导航诊断日志。 */
+      readonly engine?: SearchEngine;
+    },
+    signal: AbortSignal,
+  ): Promise<OpenedPage> {
     const combined = AbortSignal.any([this.lifetime.signal, signal]);
-    return this.withSession(sessionId, combined, async () => {
-      const { instance, release } = await this.reserve(config, combined, endsAt);
-      let ownedContext: BrowserContext | undefined;
-      let page: Page | undefined;
-      let close: Promise<void> | undefined;
-      const popups = new Set<Page>();
-      const disposePage = (): Promise<void> => {
-        close ??= (async () => {
-          if (ownedContext === undefined) {
-            await this.closeResource(page);
-            await Promise.all([...popups].map((popup) => this.closeResource(popup)));
-          } else {
-            await this.closeResource(ownedContext);
-          }
-        })();
-        return close;
-      };
-      const onAbort = (): void => { void disposePage(); };
-      try {
-        combined.throwIfAborted();
-        if (instance.context === undefined) {
-          ownedContext = await instance.browser!.newContext({ locale: 'zh-CN', acceptDownloads: false });
-        }
-        combined.throwIfAborted();
-        page = await (instance.context ?? ownedContext!).newPage();
-        if (instance.context !== undefined) {
-          const ownPopup = (popup: Page): void => {
-            popups.add(popup);
-            popup.on('popup', ownPopup);
-          };
-          page.on('popup', ownPopup);
-        }
-        const navigation = new PageNavigation(page);
-        this.navigation.set(page, navigation);
-        if (sessionId !== undefined) {
-          this.pages.set(sessionId, { page, navigation, config, signal: combined, endsAt });
-        }
-        combined.addEventListener('abort', onAbort, { once: true });
-        combined.throwIfAborted();
-        return await fn(page, navigation, combined);
-      } finally {
-        combined.removeEventListener('abort', onAbort);
-        if (sessionId !== undefined) {
-          this.pages.delete(sessionId);
-        }
-        await disposePage();
-        release();
-      }
+    const acquireEndsAt = options.endsAt ?? performance.now() + config.launchTimeoutMs + config.navigationTimeoutMs;
+    const acquired = await this.acquirePage(config, combined, acquireEndsAt);
+    const controller = new AbortController();
+    const id = randomBytes(6).toString('base64url');
+    const entry: RetainedEntry = {
+      id,
+      page: acquired.page,
+      navigation: acquired.navigation,
+      config,
+      controller,
+      signal: AbortSignal.any([this.lifetime.signal, controller.signal]),
+      disposePage: acquired.disposePage,
+      releaseLease: acquired.release,
+      timeoutMs: Math.max(0, options.timeoutMs),
+      chain: Promise.resolve(),
+      operations: 0,
+      closed: false,
+    };
+    // 有头模式下用户可能直接关闭标签页：监听后回收条目与租约。
+    acquired.page.on('close', () => {
+      void this.closeRetained(id).catch(() => {});
     });
-  }
-
-  /** 只解析当前会话或宿主提供的父会话。 */
-  sessionPage(sessionId: string | undefined, parentSessionId: string | undefined): OpenPage | undefined {
-    for (const id of [sessionId, parentSessionId]) {
-      const record = id === undefined ? undefined : this.pages.get(id);
-      if (record !== undefined && !record.signal.aborted && !record.page.isClosed()) {
-        return record;
+    this.retained.set(id, entry);
+    try {
+      let observation: PageObservation | undefined;
+      if (options.url !== undefined) {
+        observation = await this.useRetained(id, (current) => current.navigation.open(
+          options.url!, config, current.signal,
+          options.endsAt ?? performance.now() + config.navigationTimeoutMs,
+          options.engine,
+        ));
       }
+      this.armRetained(entry);
+      return { id, page: entry.page, navigation: entry.navigation, config, signal: entry.signal, observation };
+    } catch (error) {
+      await this.closeRetained(id);
+      throw error;
     }
-    return undefined;
   }
 
-  pageFor(sessionId: string | undefined, parentSessionId: string | undefined): Page | undefined {
-    return this.sessionPage(sessionId, parentSessionId)?.page;
+  /** 查询保留页面；不存在或已关闭时返回 undefined。 */
+  retainedPage(id: string): RetainedPage | undefined {
+    const entry = this.retained.get(id);
+    if (entry === undefined || entry.closed || entry.page.isClosed()) {
+      return undefined;
+    }
+    return entry;
   }
 
-  async navigate(page: Page, url: string, config: BrowserConfig): Promise<void> {
-    let navigation = this.navigation.get(page);
-    if (navigation === undefined) {
-      navigation = new PageNavigation(page);
-      this.navigation.set(page, navigation);
+  /**
+   * 借用保留页面执行操作。
+   *
+   * 同一页面上的操作按调用顺序串行执行；操作期间暂停空闲计时，全部结束后
+   * 重新计时。页面不存在或已关闭时抛错。
+   */
+  async useRetained<T>(id: string, fn: (page: RetainedPage) => Promise<T>): Promise<T> {
+    const entry = this.retained.get(id);
+    if (entry === undefined || entry.closed) {
+      throw new Error(`没有找到 ID 为 "${id}" 的浏览器页面：页面可能已因空闲超时关闭，请用 browser_web_open 重新打开`);
     }
-    const result = await navigation.open(url, config, this.lifetime.signal, performance.now() + config.navigationTimeoutMs);
-    if (result.status === 'error' || result.status === 'timeout') {
-      throw new Error(result.reason);
+    const previous = entry.chain;
+    const slot = Promise.withResolvers<void>();
+    entry.chain = previous.then(() => slot.promise);
+    await previous;
+    if (entry.closed || entry.page.isClosed()) {
+      slot.resolve();
+      throw new Error(`ID 为 "${id}" 的浏览器页面已关闭，请用 browser_web_open 重新打开`);
     }
+    entry.operations += 1;
+    if (entry.timer !== undefined) {
+      clearTimeout(entry.timer);
+      entry.timer = undefined;
+    }
+    try {
+      return await fn(entry);
+    } finally {
+      entry.operations -= 1;
+      this.armRetained(entry);
+      slot.resolve();
+    }
+  }
+
+  /** 关闭并回收一个保留页面；返回是否真的执行了回收。 */
+  async closeRetained(id: string): Promise<boolean> {
+    const entry = this.retained.get(id);
+    if (entry === undefined || entry.closed) {
+      return false;
+    }
+    entry.closed = true;
+    if (entry.timer !== undefined) {
+      clearTimeout(entry.timer);
+      entry.timer = undefined;
+    }
+    // 等待进行中的操作收尾，避免页面在操作中途被关闭。
+    await entry.chain.catch(() => {});
+    this.retained.delete(id);
+    entry.controller.abort();
+    await entry.disposePage();
+    entry.releaseLease();
+    return true;
+  }
+
+  private async closeAllRetained(): Promise<void> {
+    await Promise.allSettled([...this.retained.keys()].map((id) => this.closeRetained(id)));
   }
 
   /** 探测可执行文件，诊断不占用持久化目录。 */
@@ -494,6 +597,7 @@ export class BrowserManager {
 
   async close(): Promise<void> {
     await this.enqueue(async () => {
+      await this.closeAllRetained();
       if (this.instance !== undefined) {
         await Promise.all(this.instance.leases);
         await this.closeInstance();

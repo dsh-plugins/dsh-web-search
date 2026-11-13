@@ -1,6 +1,6 @@
 {
   "meta": {
     "title": "Web Search (Browser)",
-    "description": "Local browser tools browser_web_search and browser_web_fetch with validated search results, text or Markdown extraction, and optional dedicated browser storage."
+    "description": "Local browser tools browser_web_search, browser_web_fetch and browser_web_open with validated search results, text or Markdown extraction, retained page handles, and web_browser_* page interaction."
   }
 }

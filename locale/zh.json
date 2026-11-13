@@ -1,6 +1,6 @@
 {
   "meta": {
     "title": "网页搜索（浏览器）",
-    "description": "通过本机浏览器提供 browser_web_search 和 browser_web_fetch，支持搜索结果校验、纯文本或 Markdown 提取及专用浏览器目录。"
+    "description": "通过本机浏览器提供 browser_web_search、browser_web_fetch 与 browser_web_open，支持搜索结果校验、纯文本或 Markdown 提取、页面句柄保留与 web_browser_* 交互操作。"
   }
 }

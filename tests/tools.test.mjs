@@ -28,21 +28,27 @@ test('备用引擎只用于未指定引擎的调用，并给首次尝试保留�
   const visited = [];
   let config = resolvePluginConfig({ search: { engine: 'bing', fallbackEngine: 'baidu', timeoutMs: 2000 } });
   const registration = registerWebTools({
-    ctx: { tools: { register(tool) { tools.set(tool.name, tool); return () => tools.delete(tool.name); } } },
+    ctx: {
+      tools: { register(tool) { tools.set(tool.name, tool); return () => tools.delete(tool.name); } },
+      on() { return () => {}; },
+      systemPrompt: { section() { return () => {}; } },
+    },
     facade: { dsh: { tools: { defineTool, ToolArgsError }, timeout: { deadline } } },
     manager: {
-      withPage(_config, _session, signal, fn, endsAt) {
-        visited.push(Math.round(endsAt - performance.now()));
-        return fn({}, {
-          async open(url, _browser, _signal, _deadline, engine) {
-            if (engine === 'bing') {
-              await delay(10000, undefined, { signal });
-            }
-            assert.equal(new URL(url).searchParams.get('wd'), '中国舰船研究 兴波 计算');
-            return { status: 'ready', state: { url, candidates: [{ title: '论文', url: 'https://example.com/', snippet: '' }] } };
-          },
-        }, signal);
+      async openRetainedPage(_config, options, signal) {
+        visited.push(Math.round(options.endsAt - performance.now()));
+        const url = options.url;
+        if (options.engine === 'bing') {
+          await delay(10000, undefined, { signal });
+        }
+        assert.equal(new URL(url).searchParams.get('wd'), '中国舰船研究 兴波 计算');
+        return {
+          id: 'stub', page: {}, signal,
+          navigation: { async publicCacheTtl() { return 0; } },
+          observation: { status: 'ready', state: { url, candidates: [{ title: '论文', url: 'https://example.com/', snippet: '' }] } },
+        };
       },
+      async closeRetained() {},
     },
     get: () => config,
     subagents: () => undefined,

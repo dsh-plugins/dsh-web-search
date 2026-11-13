@@ -3,7 +3,7 @@
 
 [English](README.md)
 
-通过本机浏览器提供 `browser_web_search` 和 `browser_web_fetch`，适用于需要指定搜索引擎、渲染网页或复用站点会话的场景。
+通过本机浏览器提供 `browser_web_search`、`browser_web_fetch` 与 `browser_web_open`，以及配套的 `web_browser_*` 页面操作工具，适用于需要指定搜索引擎、渲染网页或复用站点会话的场景。
 
 ## 安装
 
@@ -22,8 +22,13 @@ dsh plugin --profile desktop add @dsh-plugin/dsh-web-search
 | --- | --- |
 | `browser_web_search` | 接受 `query` 和可选的 `engine`（`bing`、`baidu`、`sogou`、`google`）。直接提取自然搜索结果，对明确的单域名 `site:` 限定校验落地域名。设置中可开启模型摘要。 |
 | `browser_web_fetch` | 接受 HTTP(S) `url` 和可选的 `mode`。默认 `model` 整理 Markdown，`text` 直接提取可见正文。 |
+| `browser_web_open` | 打开一个 HTTP(S) 页面并返回句柄 `id`；`timeout`（秒，默认 600，上限 86400，`0` 表示打开后立即关闭）是空闲保留时长：在该时间内没有任何 `web_browser_*` 操作时浏览器页面自动关闭，每次操作都会重置计时。 |
+| `web_browser_read` | 传入页面 `id` 读取页面地址、标题与内容；`format` 为 `text`（默认，纯文本）或 `dom`（原始 HTML）。 |
+| `web_browser_click` / `web_browser_type` / `web_browser_press` / `web_browser_scroll` / `web_browser_navigate` / `web_browser_back` | 传入页面 `id` 后分别执行点击、输入、按键、滚动、跳转与后退。 |
 
-DSH 官方 `web_search` 和 `web_fetch` 与浏览器版同时可用。此前调用插件版同名工具的自动化需要改用新的工具名。
+`browser_web_search` 与 `browser_web_fetch` 也接受 `timeout`（秒，语义同上）：大于 `0` 时搜索结果页或抓取页在调用结束后保持打开，返回值附带 `pageId`，主会话与子代理都可用 `web_browser_*` 工具继续操作同一页面；`0` 表示调用结束即关闭。页面操作子代理会自动收到所属页面的 `pageId`。
+
+DSH 官方 `web_search` 和 `web_fetch` 默认在对应浏览器工具启用时被遮蔽：每个 Agent 作用域内的同名注册会返回改用提示，官方提示词节也会被移除。设置中的「禁用官方 web_search」「禁用官方 web_fetch」可分别关闭该行为，让官方工具与浏览器版共存。此前调用插件版同名工具的自动化需要改用新的工具名。
 
 搜索状态包括 `ok`、`no_results`、`blocked`、`timeout` 和 `error`，并附实际引擎与尝试记录。抓取以 `no_content` 表示无可读正文。失败时查看 `reason`。明确启用备用引擎后，未指定引擎的搜索可在被拦截、超时或无结果时额外尝试一次。各引擎的单次预算设为 `0` 时使用浏览器导航超时。
 

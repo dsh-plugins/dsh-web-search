@@ -14,7 +14,7 @@ export { SEARCH_ENGINE_DEFINITIONS, buildSearchUrl } from './engines.js';
 export { BrowserManager, BrowserLaunchError } from './browser.js';
 
 export const name = PLUGIN_NAME;
-export const inject = ['dshLoader', 'llm', 'tools'];
+export const inject = ['dshLoader', 'llm', 'tools', 'systemPrompt'];
 
 /** 注册独立的浏览器搜索、抓取和页面操作工具。 */
 export async function apply(ctx: Context): Promise<void> {
@@ -45,7 +45,7 @@ export async function apply(ctx: Context): Promise<void> {
   const reconcileBrowserTools = (): void => {
     const wanted = get().subagent.enabled && get().subagent.maxRounds !== 0 && get().fetch.enabled;
     if (wanted && disposeBrowserTools === undefined) {
-      disposeBrowserTools = registerBrowserTools(ctx, manager, loader);
+      disposeBrowserTools = registerBrowserTools(ctx, manager, loader, get);
     } else if (!wanted && disposeBrowserTools !== undefined) {
       disposeBrowserTools();
       disposeBrowserTools = undefined;

@@ -26,6 +26,7 @@ function outputText(output: readonly ContentBlock[]): string {
  *
  * @param parent - 发起调用的 Agent（`exec.agent`）；子代理从它继承工作区与谱系。
  * @param route - 配置的子代理模型路由；undefined 时沿用父代理路由。
+ * @param pageId - 目标页面的保留句柄 ID；子代理的 `web_browser_*` 调用都必须携带。
  */
 export async function runPageSubagent(
   runtime: SubagentRuntime,
@@ -33,8 +34,9 @@ export async function runPageSubagent(
   task: string,
   route: ResolvedModelRoute | undefined,
   signal: AbortSignal,
+  pageId: string,
 ): Promise<string> {
-  const prompt = buildSubagentPrompt(task);
+  const prompt = buildSubagentPrompt(task, pageId);
   const base: SubagentStartRequest = {
     label: 'dsh-web-search 页面操作',
     prompt: [{ type: 'text', text: prompt } as ContentBlock],

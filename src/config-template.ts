@@ -58,9 +58,11 @@ export function createConfigTemplate() {
         { type: 'boolean', key: 'summarize', label: '生成搜索结果摘要', default: false },
         { type: 'number', key: 'maxResults', label: '结果数量上限', default: DEFAULT_MAX_RESULTS, min: 1, max: 50 },
         { type: 'number', key: 'timeoutMs', label: '整体超时（毫秒）', default: DEFAULT_SEARCH_TIMEOUT_MS, min: 1000, max: MAX_TIMER_DELAY_MS },
+        { type: 'boolean', key: 'disableOfficial', label: '禁用官方 web_search', default: true, description: '启用 browser_web_search 时，在会话中遮蔽官方 web_search 工具并移除其提示词。关闭后两者共存。' },
       ]),
       object('fetch', '网页抓取', [
         { type: 'boolean', key: 'enabled', label: '启用 browser_web_fetch', default: true },
+        { type: 'boolean', key: 'disableOfficial', label: '禁用官方 web_fetch', default: true, description: '启用 browser_web_fetch 时，在会话中遮蔽官方 web_fetch 工具并移除其提示词。关闭后两者共存。' },
         { type: 'number', key: 'timeoutMs', label: '整体超时（毫秒）', default: DEFAULT_FETCH_TIMEOUT_MS, min: 1000, max: MAX_TIMER_DELAY_MS },
         { type: 'select', key: 'mode', label: '默认抓取模式', default: 'model', options: [{ label: '模型整理为 Markdown', value: 'model' }, { label: '直接提取纯文本', value: 'text' }] },
         { type: 'number', key: 'maxMarkdownChars', label: '正文输出上限（字符）', default: DEFAULT_MAX_MARKDOWN_CHARS, min: 1000, max: 2000000 },
