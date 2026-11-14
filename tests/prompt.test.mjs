@@ -20,7 +20,7 @@ test('抓取提示词只在允许交互时提供 interact', () => {
 
 test('子代理提示词列出浏览器工具', () => {
   const prompt = buildSubagentPrompt('点击同意按钮');
-  for (const tool of ['web_browser_read', 'web_browser_click', 'web_browser_type', 'web_browser_press', 'web_browser_scroll', 'web_browser_navigate', 'web_browser_back']) {
+  for (const tool of ['browser_web_read', 'browser_web_click', 'browser_web_type', 'browser_web_press', 'browser_web_scroll', 'browser_web_navigate', 'browser_web_back']) {
     assert.ok(prompt.includes(tool), tool);
   }
   assert.match(prompt, /点击同意按钮/);

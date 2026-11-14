@@ -1,5 +1,5 @@
 /**
- * 浏览器操作工具（`browser_web_open` 与 `web_browser_*`）：
+ * 浏览器操作工具（`browser_web_open` 与 `browser_web_*`）：
  * 按 ID 打开、读取和操作保留的浏览器页面。
  *
  * 页面由 `browser_web_open` 显式打开，或由 `browser_web_search` /
@@ -26,9 +26,9 @@ import { MAX_SCRIPT_CHARS, runPlaywrightScript } from './script.js';
 
 /** 单次页面操作的时间预算（工具 timeoutMs 为 30 秒）。 */
 const OPERATION_BUDGET_MS = 28500;
-/** web_browser_read 的纯文本输出上限。 */
+/** browser_web_read 的纯文本输出上限。 */
 const READ_TEXT_CHARS = 20000;
-/** web_browser_read 的 DOM 输出上限。 */
+/** browser_web_read 的 DOM 输出上限。 */
 const READ_DOM_CHARS = 200000;
 /** 脚本执行结束后读取页面标题的预算。 */
 const TITLE_BUDGET_MS = 5000;
@@ -90,7 +90,7 @@ const STATE_SCHEMA = {
 } as const;
 
 /**
- * 注册 `browser_web_open` 与全部 `web_browser_*` 工具；返回统一清理函数。
+ * 注册 `browser_web_open` 与全部 `browser_web_*` 工具；返回统一清理函数。
  */
 export function registerBrowserTools(
   ctx: Context,
@@ -103,12 +103,12 @@ export function registerBrowserTools(
   const disposers = [
     ctx.tools.register(defineTool({
       name: 'browser_web_open',
-      description: 'Open an HTTP(S) page in a managed browser and keep it alive. Returns a page ID for web_browser_read/navigate/click/type/press/scroll/back. The page closes automatically after `timeout` seconds without any operation.',
+      description: 'Open an HTTP(S) page in a managed browser and keep it alive. Returns a page ID for browser_web_read/navigate/click/type/press/scroll/back. The page closes automatically after `timeout` seconds without any operation.',
       parameters: {
         url: { type: 'string', required: true, description: 'Absolute http(s) URL to open.' },
         timeout: {
           type: 'integer',
-          description: `Idle lifetime of the page in seconds, 1–${MAX_PAGE_RETENTION_S}. The page closes when no operation touches it for this long; any web_browser_* operation resets the timer. Defaults to ${DEFAULT_PAGE_RETENTION_S}. 0 closes the page right after opening (the returned ID becomes unusable).`,
+          description: `Idle lifetime of the page in seconds, 1–${MAX_PAGE_RETENTION_S}. The page closes when no operation touches it for this long; any browser_web_* operation resets the timer. Defaults to ${DEFAULT_PAGE_RETENTION_S}. 0 closes the page right after opening (the returned ID becomes unusable).`,
         },
       },
       output: {
@@ -151,7 +151,7 @@ export function registerBrowserTools(
       },
     })),
     ctx.tools.register(defineTool({
-      name: 'web_browser_read',
+      name: 'browser_web_read',
       description: 'Read an open browser page by ID: URL, title, and page content. format "text" returns visible text; format "dom" returns the cleaned DOM.',
       parameters: {
         id: ID_PARAMETER,
@@ -193,7 +193,7 @@ export function registerBrowserTools(
       },
     })),
     ctx.tools.register(defineTool({
-      name: 'web_browser_click',
+      name: 'browser_web_click',
       description: 'Click an element on an open browser page by CSS selector. Returns the resulting page state.',
       parameters: {
         id: ID_PARAMETER,
@@ -210,7 +210,7 @@ export function registerBrowserTools(
       },
     })),
     ctx.tools.register(defineTool({
-      name: 'web_browser_type',
+      name: 'browser_web_type',
       description: 'Clear and type text into an input on an open browser page, optionally pressing Enter afterwards.',
       parameters: {
         id: ID_PARAMETER,
@@ -240,7 +240,7 @@ export function registerBrowserTools(
       },
     })),
     ctx.tools.register(defineTool({
-      name: 'web_browser_press',
+      name: 'browser_web_press',
       description: 'Press a keyboard key on an open browser page (e.g. Enter, Escape, Tab).',
       parameters: {
         id: ID_PARAMETER,
@@ -257,7 +257,7 @@ export function registerBrowserTools(
       },
     })),
     ctx.tools.register(defineTool({
-      name: 'web_browser_scroll',
+      name: 'browser_web_scroll',
       description: 'Scroll an open browser page up or down.',
       parameters: {
         id: ID_PARAMETER,
@@ -276,7 +276,7 @@ export function registerBrowserTools(
       },
     })),
     ctx.tools.register(defineTool({
-      name: 'web_browser_navigate',
+      name: 'browser_web_navigate',
       description: 'Navigate an open browser page to a new URL and wait for it to load.',
       parameters: {
         id: ID_PARAMETER,
@@ -288,7 +288,7 @@ export function registerBrowserTools(
       },
       timeoutMs: 60000,
       async execute(args, exec) {
-        const url = checkedHttpUrl('web_browser_navigate', args.url);
+        const url = checkedHttpUrl('browser_web_navigate', args.url);
         return await manager.useRetained(args.id, async (record) => {
           const combined = AbortSignal.any([record.signal, exec.signal]);
           const endsAt = performance.now() + 59000;
@@ -301,7 +301,7 @@ export function registerBrowserTools(
       },
     })),
     ctx.tools.register(defineTool({
-      name: 'web_browser_back',
+      name: 'browser_web_back',
       description: 'Go back to the previous page in the open browser page history.',
       parameters: {
         id: ID_PARAMETER,
@@ -429,7 +429,7 @@ export function registerExecTool(
       'Run a Playwright script against a managed browser page.',
       'The script is the body of an async function with `page`, `context`, `console`, `sleep(ms)`, `assert(cond, msg)`, `assertEqual(actual, expected, msg)`, `URL`, `URLSearchParams`, `setTimeout` and `clearTimeout` in scope; use `return` to hand back a JSON-serializable value.',
       'Pass `pageId` to reuse a page from browser_web_open / browser_web_search / browser_web_fetch, or `url` to open a new one (both omitted opens a blank page).',
-      'The page stays open for `timeout` seconds of idle time and its ID is returned, so later web_browser_* calls keep working on it.',
+      'The page stays open for `timeout` seconds of idle time and its ID is returned, so later browser_web_* calls keep working on it.',
       'The script runs in a restricted context, not a security sandbox: page objects still reach the plugin process, so use it for trusted test scenarios only. Keep the synchronous part short and `await` page operations.',
     ].join(' '),
     parameters: {

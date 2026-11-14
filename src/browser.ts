@@ -115,7 +115,7 @@ interface BrowserInstance {
 
 /** 由 `browser_web_open` / `browser_web_search` / `browser_web_fetch` 打开并保留的页面句柄。 */
 export interface RetainedPage {
-  /** 页面句柄 ID，供 `web_browser_*` 工具的 `id` 参数使用。 */
+  /** 页面句柄 ID，供 `browser_web_*` 工具的 `id` 参数使用。 */
   readonly id: string;
   readonly page: Page;
   readonly navigation: PageNavigation;
@@ -146,7 +146,7 @@ export interface OpenedPage extends RetainedPage {
 }
 
 function fingerprintOf(config: BrowserConfig): string {
-  return JSON.stringify([config.kind, config.executablePath, config.headless, config.launchTimeoutMs, config.persistentProfileDir]);
+  return JSON.stringify([config.kind, config.executablePath, config.headless, config.launchTimeoutMs, config.persistentProfileDir, config.userAgent]);
 }
 
 async function untilAbort<T>(promise: Promise<T>, signal: AbortSignal): Promise<T> {
@@ -289,7 +289,7 @@ export class BrowserManager {
             break;
           }
           const context = await launcher.launchPersistentContext(profile.directory, {
-            ...options, timeout: remaining, locale: 'zh-CN', acceptDownloads: false,
+            ...options, timeout: remaining, locale: 'zh-CN', acceptDownloads: false, ...(config.userAgent ? { userAgent: config.userAgent } : {}),
           });
           context.on('close', () => { instance.available = false; });
           return Object.assign(instance, { context });
@@ -406,7 +406,7 @@ export class BrowserManager {
     try {
       signal.throwIfAborted();
       if (instance.context === undefined) {
-        ownedContext = await instance.browser!.newContext({ locale: 'zh-CN', acceptDownloads: false });
+        ownedContext = await instance.browser!.newContext({ locale: 'zh-CN', acceptDownloads: false, ...(config.userAgent ? { userAgent: config.userAgent } : {}) });
       }
       signal.throwIfAborted();
       page = await (instance.context ?? ownedContext!).newPage();

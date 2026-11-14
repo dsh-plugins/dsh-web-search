@@ -2,7 +2,7 @@
  * 页面操作子代理：把需要点击、输入等交互的任务委托给一次性子代理执行。
  *
  * 子代理通过 `ctx.subagents` 的 `spawn` 提供方在进程内运行；本插件注册的
- * `web_browser_*` 工具操作父代理打开的同一个浏览器页面。
+ * `browser_web_*` 工具操作父代理打开的同一个浏览器页面。
  *
  * @module dsh-web-search/subagent
  */
@@ -26,7 +26,7 @@ function outputText(output: readonly ContentBlock[]): string {
  *
  * @param parent - 发起调用的 Agent（`exec.agent`）；子代理从它继承工作区与谱系。
  * @param route - 配置的子代理模型路由；undefined 时沿用父代理路由。
- * @param pageId - 目标页面的保留句柄 ID；子代理的 `web_browser_*` 调用都必须携带。
+ * @param pageId - 目标页面的保留句柄 ID；子代理的 `browser_web_*` 调用都必须携带。
  */
 export async function runPageSubagent(
   runtime: SubagentRuntime,

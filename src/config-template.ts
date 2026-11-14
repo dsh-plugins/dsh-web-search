@@ -75,6 +75,7 @@ export function createConfigTemplate() {
           type: 'text', key: 'executablePath', label: '自定义浏览器路径', default: '',
           description: '浏览器可执行文件的绝对路径（如 Chrome / Edge / Chromium 主程序）。留空时自动搜索：Chromium 依次尝试本机 Chrome、Edge 与 Playwright 缓存的浏览器；Firefox 与 WebKit 使用 Playwright 缓存版本（可用 npx playwright install firefox webkit 安装）。',
         },
+        { type: 'text', key: 'userAgent', label: 'User-Agent（UA）', default: '', description: '留空使用浏览器默认 UA。修改后回收现有页面，新建临时或持久上下文时生效。' },
         { type: 'boolean', key: 'headless', label: '无头模式', default: true, description: '关闭后弹出可见浏览器窗口，便于观察页面交互过程。' },
         { type: 'text', key: 'persistentProfileDir', label: '专用浏览器目录', default: '', description: '留空时每次调用隔离。填写空目录或尚不存在的绝对路径，同一个 DSH profile 中的会话共享站点 Cookie。' },
         { type: 'number', key: 'challengeWaitMs', label: '人工验证等待（毫秒）', default: 0, min: 0, max: 120000, description: '仅在使用专用浏览器目录且关闭无头模式时生效。0 表示遇到挑战立即返回。' },

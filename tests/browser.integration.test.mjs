@@ -4,7 +4,6 @@ import assert from 'node:assert/strict';
 import { mkdtemp, realpath, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
-import { setTimeout as delay } from 'node:timers/promises';
 import { defineTool, ToolArgsError } from '@deepseek-ai/dsh-tools';
 import { deadline } from '@deepseek-ai/dsh-timeout';
 import { BlockAssembler, createUserMessage } from '@deepseek-ai/dsh-llm';
@@ -22,6 +21,37 @@ const facade = {
   dsh: { tools: { defineTool, ToolArgsError }, timeout: { deadline }, llm: { BlockAssembler } },
   llm: { createUserMessage },
 };
+
+test('自定义 UA 覆盖请求与 navigator，临时/持久上下文及配置更改均生效', { skip, timeout: 60000 }, async () => {
+  const tempRoot = await realpath(tmpdir());
+  const profile = await mkdtemp(join(tempRoot, 'dsh-browser-ua-'));
+  const manager = new BrowserManager();
+  try {
+    for (const persistentProfileDir of ['', profile]) {
+      for (const userAgent of ['DSH-Test/1.0', 'DSH-Test/2.0', '']) {
+        const config = resolvePluginConfig({ browser: { ...browser, persistentProfileDir, userAgent } }).browser;
+        manager.configure(config);
+        const opened = await manager.openRetainedPage(config, { timeoutMs: 0 }, AbortSignal.timeout(15000));
+        await manager.useRetained(opened.id, async ({ page }) => {
+          let requestUA;
+          await page.route('**/*', async route => {
+            requestUA = route.request().headers()['user-agent'];
+            await route.fulfill({ contentType: 'text/html', body: '<main>UA fixture</main>' });
+          });
+          await page.goto('https://fixture.example/ua');
+          const navigatorUA = await page.evaluate(() => navigator.userAgent);
+          assert.equal(requestUA, navigatorUA);
+          if (userAgent) assert.equal(navigatorUA, userAgent);
+          else assert.match(navigatorUA, /Mozilla\/5\.0/);
+        });
+        await manager.closeRetained(opened.id);
+      }
+    }
+  } finally {
+    await manager.dispose();
+    await rm(profile, { recursive: true, force: true });
+  }
+});
 
 function searchPage(engine) {
   const bingLink = '/ck/a?u=a1' + Buffer.from(allowed).toString('base64url');
@@ -47,6 +77,8 @@ test('Edge 页面样本覆盖四个引擎、挑战识别、抓取模式及缓存
   let config = resolvePluginConfig({ browser, search: { engine: 'baidu', fallbackEngine: 'bing' } });
   const registration = registerWebTools({
     ctx: {
+      on() { return () => {}; },
+      systemPrompt: { section() { return () => {}; } },
       tools: { register(tool) { registered.set(tool.name, tool); return () => registered.delete(tool.name); } },
       llm: { async *stream({ messages }) {
         modelCalls += 1;
@@ -58,8 +90,9 @@ test('Edge 页面样本覆盖四个引擎、挑战识别、抓取模式及缓存
     },
     facade,
     manager: {
-      withPage(options, session, signal, action, endsAt) {
-        return browserManager.withPage(options, session, signal, async (page, navigation, pageSignal) => {
+      async openRetainedPage(config, options, signal) {
+        const opened = await browserManager.openRetainedPage(config, { ...options, url: undefined }, signal);
+        const { page, navigation } = opened;
           await page.route('**/*', async (route) => {
             if (!route.request().isNavigationRequest()) {
               return route.abort();
@@ -105,9 +138,11 @@ test('Edge 页面样本覆盖四个引擎、挑战识别、抓取模式及缓存
             }
             return html(searchPage(engine));
           });
-          return action(page, navigation, pageSignal);
-        }, endsAt);
+        const observation = await navigation.open(options.url, config, signal, options.endsAt, options.engine);
+        return { ...opened, observation };
       },
+      useRetained: (...args) => browserManager.useRetained(...args),
+      closeRetained: (...args) => browserManager.closeRetained(...args),
     },
     get: () => config,
     subagents: () => ({
@@ -184,36 +219,17 @@ test('Edge 持久化目录可重开、任务隔离，并能重新识别人工验
   const profile = await mkdtemp(join(tempRoot, 'dsh-browser-fixture-'));
   const config = resolvePluginConfig({ browser: { ...browser, persistentProfileDir: profile } }).browser;
   const manager = new BrowserManager();
-  const controller = new AbortController();
-  const opened = Promise.withResolvers();
-  const released = Promise.withResolvers();
-  const initial = manager.withPage(config, 'first', controller.signal, async (page, _navigation, signal) => {
-    await page.context().addCookies([{ url: 'https://fixture.example/', name: 'saved', value: 'yes', expires: Date.now() / 1000 + 3600 }]);
-    opened.resolve(page);
-    await delay(20000, undefined, { signal });
-  }).catch((error) => {
-    opened.reject(error);
-    if (!controller.signal.aborted) {
-      throw error;
-    }
-  });
   try {
-    const first = await opened.promise;
-    const second = await manager.withPage(config, 'second', AbortSignal.timeout(10000), async (page, navigation, signal) => {
-      assert.equal(manager.pageFor('unrelated', undefined), undefined);
-      assert.equal(manager.pageFor('child', 'first'), first);
-      assert.notEqual(page, first);
-      assert.equal((await page.context().cookies()).find((cookie) => cookie.name === 'saved')?.value, 'yes');
-      const sameSession = manager.withPage(config, 'second', AbortSignal.timeout(10000), async () => released.resolve());
-      void sameSession.catch(() => {});
-      await delay(100);
-      assert.equal(manager.pageFor('second', undefined), page);
-      controller.abort();
-      await initial;
-      assert.equal(first.isClosed(), true);
-      assert.equal(page.isClosed(), false);
-
-      await page.route('https://fixture.example/**', (route) => new URL(route.request().url()).pathname === '/verify'
+    const first = await manager.openRetainedPage(config, { timeoutMs: 0 }, AbortSignal.timeout(10000));
+    await first.page.context().addCookies([{ url: 'https://fixture.example/', name: 'saved', value: 'yes', expires: Date.now() / 1000 + 3600 }]);
+    const second = await manager.openRetainedPage(config, { timeoutMs: 0 }, AbortSignal.timeout(10000));
+    assert.notEqual(first.page, second.page);
+    assert.equal((await second.page.context().cookies()).find(cookie => cookie.name === 'saved')?.value, 'yes');
+    await manager.closeRetained(first.id);
+    assert.equal(first.page.isClosed(), true);
+    assert.equal(second.page.isClosed(), false);
+    await manager.useRetained(second.id, async ({ page, navigation, signal }) => {
+      await page.route('https://fixture.example/**', route => new URL(route.request().url()).pathname === '/verify'
         ? route.fulfill({
           status: 403, contentType: 'text/html; charset=utf-8', headers: { 'cf-mitigated': 'challenge' },
           body: '<title>Challenge</title><script>setTimeout(() => location.href="/done", 250)</script>',
@@ -223,17 +239,12 @@ test('Edge 持久化目录可重开、任务隔离，并能重新识别人工验
         signal, performance.now() + 4000);
       assert.equal(result.status, 'ready', JSON.stringify(result));
       assert.match(result.state.text, /验证后的正文/);
-      return { sameSession };
     });
-    await second.sameSession;
-    await released.promise;
     await manager.close();
-    await manager.withPage(config, 'new-session', AbortSignal.timeout(10000), async (page) => {
-      assert.equal((await page.context().cookies()).find((cookie) => cookie.name === 'saved')?.value, 'yes');
-    });
+    const reopened = await manager.openRetainedPage(config, { timeoutMs: 0 }, AbortSignal.timeout(10000));
+    assert.equal((await reopened.page.context().cookies()).find(cookie => cookie.name === 'saved')?.value, 'yes');
   } finally {
-    controller.abort();
-    await Promise.allSettled([initial, manager.dispose()]);
+    await manager.dispose();
     assert.equal(dirname(await realpath(profile)), tempRoot);
     await rm(profile, { recursive: true, force: true });
   }

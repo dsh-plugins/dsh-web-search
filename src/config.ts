@@ -82,6 +82,7 @@ export interface PluginConfig {
   browser: {
     kind: BrowserKind;
     executablePath: string;
+    userAgent: string;
     headless: boolean;
     persistentProfileDir: string;
     challengeWaitMs: number;
@@ -127,6 +128,7 @@ export interface ResolvedPluginConfig {
   readonly browser: {
     readonly kind: BrowserKind;
     readonly executablePath: string;
+    readonly userAgent: string;
     readonly headless: boolean;
     readonly persistentProfileDir: string;
     readonly challengeWaitMs: number;
@@ -221,6 +223,7 @@ export function resolvePluginConfig(config: { [K in keyof PluginConfig]?: Partia
     browser: {
       kind: isBrowserKind(browser.kind) ? browser.kind : 'auto',
       executablePath: typeof browser.executablePath === 'string' ? browser.executablePath.trim() : '',
+      userAgent: typeof browser.userAgent === 'string' ? browser.userAgent.trim() : '',
       headless: browser.headless ?? true,
       persistentProfileDir: typeof browser.persistentProfileDir === 'string' ? browser.persistentProfileDir.trim() : '',
       challengeWaitMs: intInRange(browser.challengeWaitMs, 0, 0, 120000),

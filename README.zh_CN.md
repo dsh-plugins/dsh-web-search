@@ -3,7 +3,7 @@
 
 [English](README.md)
 
-通过本机浏览器提供 `browser_web_search`、`browser_web_fetch` 与 `browser_web_open`，配套 `web_browser_*` 页面操作工具与可执行助手自写 Playwright 脚本的 `browser_web_exec`，适用于需要指定搜索引擎、渲染网页或复用站点会话的场景。
+通过本机浏览器提供 `browser_web_search`、`browser_web_fetch` 与 `browser_web_open`，配套 `browser_web_*` 页面操作工具与可执行助手自写 Playwright 脚本的 `browser_web_exec`，适用于需要指定搜索引擎、渲染网页或复用站点会话的场景。
 
 ## 安装
 
@@ -22,12 +22,12 @@ dsh plugin --profile desktop add @dsh-plugin/dsh-web-search
 | --- | --- |
 | `browser_web_search` | 接受 `query` 和可选的 `engine`（`bing`、`baidu`、`sogou`、`google`）。直接提取自然搜索结果，对明确的单域名 `site:` 限定校验落地域名。设置中可开启模型摘要。 |
 | `browser_web_fetch` | 接受 HTTP(S) `url` 和可选的 `mode`。默认 `model` 整理 Markdown，`text` 直接提取可见正文。 |
-| `browser_web_open` | 打开一个 HTTP(S) 页面并返回句柄 `id`；`timeout`（秒，默认 600，上限 86400，`0` 表示打开后立即关闭）是空闲保留时长：在该时间内没有任何 `web_browser_*` 操作时浏览器页面自动关闭，每次操作都会重置计时。 |
-| `web_browser_read` | 传入页面 `id` 读取页面地址、标题与内容；`format` 为 `text`（默认，纯文本）或 `dom`（原始 HTML）。 |
-| `web_browser_click` / `web_browser_type` / `web_browser_press` / `web_browser_scroll` / `web_browser_navigate` / `web_browser_back` | 传入页面 `id` 后分别执行点击、输入、按键、滚动、跳转与后退。 |
+| `browser_web_open` | 打开一个 HTTP(S) 页面并返回句柄 `id`；`timeout`（秒，默认 600，上限 86400，`0` 表示打开后立即关闭）是空闲保留时长：在该时间内没有任何 `browser_web_*` 操作时浏览器页面自动关闭，每次操作都会重置计时。 |
+| `browser_web_read` | 传入页面 `id` 读取页面地址、标题与内容；`format` 为 `text`（默认，纯文本）或 `dom`（原始 HTML）。 |
+| `browser_web_click` / `browser_web_type` / `browser_web_press` / `browser_web_scroll` / `browser_web_navigate` / `browser_web_back` | 传入页面 `id` 后分别执行点击、输入、按键、滚动、跳转与后退。 |
 | `browser_web_exec` | 在页面上执行助手编写的 Playwright 脚本。传 `pageId` 复用保留页面，或传 `url` 新开页面；`script` 是 async 函数体，可用 `page`、`context`、`console`、`sleep(ms)`、`assert`、`assertEqual`、`URL`、`URLSearchParams`、`setTimeout` 与 `clearTimeout`，用 `return` 交出结果。返回 `ok`、返回值、脚本控制台输出、耗时、页面状态与页面 ID。 |
 
-`browser_web_search` 与 `browser_web_fetch` 也接受 `timeout`（秒，语义同上）：大于 `0` 时搜索结果页或抓取页在调用结束后保持打开，返回值附带 `pageId`，主会话与子代理都可用 `web_browser_*` 工具继续操作同一页面；`0` 表示调用结束即关闭。页面操作子代理会自动收到所属页面的 `pageId`。
+`browser_web_search` 与 `browser_web_fetch` 也接受 `timeout`（秒，语义同上）：大于 `0` 时搜索结果页或抓取页在调用结束后保持打开，返回值附带 `pageId`，主会话与子代理都可用 `browser_web_*` 工具继续操作同一页面；`0` 表示调用结束即关闭。页面操作子代理会自动收到所属页面的 `pageId`。
 
 DSH 官方 `web_search` 和 `web_fetch` 默认在对应浏览器工具启用时被遮蔽：每个 Agent 作用域内的同名注册会返回改用提示，官方提示词节也会被移除。设置中的「禁用官方 web_search」「禁用官方 web_fetch」可分别关闭该行为，让官方工具与浏览器版共存。此前调用插件版同名工具的自动化需要改用新的工具名。
 
@@ -56,3 +56,5 @@ npm pack --dry-run
 真实浏览器回归测试可通过环境变量 `DSH_WEB_SEARCH_TEST_BROWSER` 指定本机 Chromium、Chrome 或 Edge 的可执行文件，再运行 `npm test`。
 
 LGPL-3.0-only
+
+浏览器设置中的 `browser.userAgent` 可自定义 UA；留空使用浏览器原生值。临时和持久上下文均生效，修改后回收保留页面并重建浏览器上下文。页面控制工具统一使用 `browser_web_*` 前缀，原 `web_browser_*` 调用需同步迁移。

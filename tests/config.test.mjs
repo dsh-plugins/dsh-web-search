@@ -13,10 +13,17 @@ test('空配置回退到默认值', () => {
   assert.equal(config.browser.persistentProfileDir, '');
   assert.equal(config.browser.kind, 'auto');
   assert.equal(config.browser.headless, true);
+  assert.equal(config.browser.userAgent, '');
   assert.equal(config.analysis.route, undefined);
   assert.equal(config.subagent.enabled, true);
   assert.equal(config.subagent.maxRounds, 3);
   assert.equal(config.analysis.maxTokens, 38400);
+});
+
+test('浏览器 UA 去除首尾空白，未设置时保留原生 UA', () => {
+  assert.equal(resolvePluginConfig({ browser: { userAgent: '  CustomBrowser/1.0  ' } }).browser.userAgent, 'CustomBrowser/1.0');
+  assert.equal(resolvePluginConfig({ browser: { userAgent: ' ' } }).browser.userAgent, '');
+  assert.equal(resolvePluginConfig({ browser: { userAgent: 42 } }).browser.userAgent, '');
 });
 
 test('非法取值回退默认值，数值裁剪到范围内', () => {

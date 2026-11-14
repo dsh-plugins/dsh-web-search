@@ -3,6 +3,8 @@
 # reconciles the package into `dsh.profile.bundles` and the profile boot
 # applies this layer automatically — no manual cordis.patch.yml edit needed.
 - insert:
+    - id: dsh-web-search-loader-check
+      name: '@dsh-plugin/dsh-web-search/loader-check'
     # Stable id so later layers can patch/disable this row by id.
     - id: dsh-web-search
       name: '@dsh-plugin/dsh-web-search'
