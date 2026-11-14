@@ -1,7 +1,7 @@
 {
   "name": "@dsh-plugin/dsh-web-search",
   "version": "2.0.0",
-  "description": "Browser-backed search and fetch for DeepSeek Harness with validated engine results, direct text or model-formatted Markdown, and optional persistent browser sessions.",
+  "description": "Browser-backed search and fetch for DeepSeek Harness with validated engine results, direct text or model-formatted Markdown, retained page handles, assistant-written Playwright scripts, and optional persistent browser sessions.",
   "type": "module",
   "main": "lib/index.js",
   "types": "lib/index.d.ts",

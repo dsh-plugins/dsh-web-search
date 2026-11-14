@@ -19,9 +19,10 @@ import {
   type ResolvedPluginConfig,
 } from './config.js';
 import type { DshFacade } from './dsh.js';
-import type { BrowserManager, RetainedPage } from './browser.js';
+import type { BrowserManager, OpenedPage, RetainedPage } from './browser.js';
 import { captureSnapshot, captureText } from './html.js';
 import { readBeforeDeadline, timeLeft } from './navigation.js';
+import { MAX_SCRIPT_CHARS, runPlaywrightScript } from './script.js';
 
 /** 单次页面操作的时间预算（工具 timeoutMs 为 30 秒）。 */
 const OPERATION_BUDGET_MS = 28500;
@@ -29,6 +30,10 @@ const OPERATION_BUDGET_MS = 28500;
 const READ_TEXT_CHARS = 20000;
 /** web_browser_read 的 DOM 输出上限。 */
 const READ_DOM_CHARS = 200000;
+/** 脚本执行结束后读取页面标题的预算。 */
+const TITLE_BUDGET_MS = 5000;
+/** 脚本执行工具在脚本预算之外留给启动、导航与回收的余量。 */
+const EXEC_OVERHEAD_MS = 60000;
 
 /** 所有页面操作工具共用的 ID 参数。 */
 const ID_PARAMETER = {
@@ -318,4 +323,181 @@ export function registerBrowserTools(
       dispose();
     }
   };
+}
+
+/** `browser_web_exec` 的返回值。 */
+interface ExecValue {
+  ok: boolean;
+  pageId?: string;
+  url?: string;
+  title?: string;
+  status?: 'empty' | 'blocked' | 'timeout' | 'error';
+  reason?: string;
+  result?: string;
+  logs?: string;
+  error?: string;
+  durationMs: number;
+}
+
+const EXEC_SCHEMA = {
+  type: 'object',
+  additionalProperties: false,
+  properties: {
+    ok: { type: 'boolean', required: true },
+    pageId: { type: 'string' },
+    url: { type: 'string' },
+    title: { type: 'string' },
+    status: { type: 'string', enum: ['empty', 'blocked', 'timeout', 'error'] },
+    reason: { type: 'string' },
+    result: { type: 'string' },
+    logs: { type: 'string' },
+    error: { type: 'string' },
+    durationMs: { type: 'integer', required: true },
+  },
+} as const;
+
+/** 合并脚本执行结果与页面状态，渲染成面向模型的文本。 */
+function renderExec(value: ExecValue): string {
+  return [
+    `${value.ok ? '脚本执行完成' : '脚本执行失败'}（${value.durationMs} ms）`,
+    `页面：${value.title ?? ''}（${value.url ?? ''}）${value.pageId === undefined ? '' : `，ID: ${value.pageId}`}`,
+    value.status === undefined ? '' : `导航状态：${value.status}${value.reason === undefined ? '' : ' · ' + value.reason}`,
+    value.error === undefined ? '' : `错误：${value.error}`,
+    value.result === undefined ? '' : `返回值：\n${value.result}`,
+    value.logs === undefined ? '' : `脚本输出：\n${value.logs}`,
+  ].filter((line) => line !== '').join('\n');
+}
+
+/** 脚本可能自行新开标签页：执行结束后关闭本次新增的页面，避免标签页泄漏。 */
+async function closeOpenedByScript(page: Page, before: ReadonlySet<Page>): Promise<void> {
+  let pages: Page[];
+  try {
+    pages = page.context().pages();
+  } catch {
+    // 上下文已关闭，无需回收。
+    return;
+  }
+  const extra = pages.filter((candidate) => candidate !== page && !before.has(candidate));
+  await Promise.allSettled(extra.map(async (candidate) => {
+    try {
+      await candidate.close();
+    } catch {
+      // 脚本已经关闭该页面。
+    }
+  }));
+}
+
+/** 读取脚本执行后的页面状态；页面被脚本关闭时回退为空值。 */
+async function stateAfterScript(page: Page, signal: AbortSignal): Promise<{ url?: string; title?: string }> {
+  let url: string | undefined;
+  try {
+    url = page.url();
+  } catch {
+    url = undefined;
+  }
+  let title: string | undefined;
+  try {
+    title = await readBeforeDeadline(() => page.title(), performance.now() + TITLE_BUDGET_MS, signal) ?? undefined;
+  } catch {
+    title = undefined;
+  }
+  return {
+    ...(url !== undefined && url.length > 0 && url !== 'about:blank' ? { url } : {}),
+    ...(title !== undefined && title.length > 0 ? { title } : {}),
+  };
+}
+
+/**
+ * 注册 `browser_web_exec`：在受管页面里执行助手编写的 Playwright 脚本。
+ *
+ * 脚本在 `node:vm` 上下文中运行，可用的绑定与限制见工具描述；页面来源为
+ * `pageId`（复用保留页面）或 `url`（新开并保留）。工具 budget 由注册时的
+ * `exec.maxDurationMs` 决定，配置变化后由调用方重新注册。
+ */
+export function registerExecTool(
+  ctx: Context,
+  manager: BrowserManager,
+  facade: DshFacade,
+  get: () => ResolvedPluginConfig,
+): () => void {
+  const defineTool = facade.dsh.tools.defineTool;
+  const ToolArgsError = facade.dsh.tools.ToolArgsError;
+  const maxDurationMs = get().exec.maxDurationMs;
+  return ctx.tools.register(defineTool({
+    name: 'browser_web_exec',
+    description: [
+      'Run a Playwright script against a managed browser page.',
+      'The script is the body of an async function with `page`, `context`, `console`, `sleep(ms)`, `assert(cond, msg)`, `assertEqual(actual, expected, msg)`, `URL`, `URLSearchParams`, `setTimeout` and `clearTimeout` in scope; use `return` to hand back a JSON-serializable value.',
+      'Pass `pageId` to reuse a page from browser_web_open / browser_web_search / browser_web_fetch, or `url` to open a new one (both omitted opens a blank page).',
+      'The page stays open for `timeout` seconds of idle time and its ID is returned, so later web_browser_* calls keep working on it.',
+      'The script runs in a restricted context, not a security sandbox: page objects still reach the plugin process, so use it for trusted test scenarios only. Keep the synchronous part short and `await` page operations.',
+    ].join(' '),
+    parameters: {
+      script: {
+        type: 'string',
+        required: true,
+        description: `Playwright script body (async function body, at most ${MAX_SCRIPT_CHARS} characters). Example: await page.goto("https://example.com"); return await page.title();`,
+      },
+      pageId: {
+        type: 'string',
+        description: 'Reuse an existing retained page instead of opening a new one. Mutually exclusive with url.',
+      },
+      url: {
+        type: 'string',
+        description: 'Absolute http(s) URL to open before running the script. Mutually exclusive with pageId.',
+      },
+      timeout: {
+        type: 'integer',
+        description: `Idle lifetime in seconds for a page opened by this call (1–${MAX_PAGE_RETENTION_S}, default ${DEFAULT_PAGE_RETENTION_S}; 0 closes it right after the script, which makes the returned ID unusable). Ignored when pageId is given.`,
+      },
+    },
+    output: {
+      schema: EXEC_SCHEMA,
+      render: (_args, value) => [{ type: 'text', text: renderExec(value as ExecValue) }],
+      presentationMeta: (_args, value) => ({ title: value.ok ? '脚本执行完成' : '脚本执行失败', ...(value.url === undefined ? {} : { link: value.url }) }),
+    },
+    timeoutMs: maxDurationMs + EXEC_OVERHEAD_MS,
+    async execute(args, exec): Promise<ExecValue> {
+      const config = get();
+      const script = args.script.trim();
+      if (script.length === 0) {
+        throw new ToolArgsError(['browser_web_exec: script 不能为空']);
+      }
+      if (script.length > MAX_SCRIPT_CHARS) {
+        throw new ToolArgsError([`browser_web_exec: script 超过 ${MAX_SCRIPT_CHARS} 字符上限`]);
+      }
+      if (args.url !== undefined && args.pageId !== undefined) {
+        throw new ToolArgsError(['browser_web_exec: url 与 pageId 不能同时提供']);
+      }
+      const startedAt = performance.now();
+      const endsAt = startedAt + config.exec.maxDurationMs;
+      const run = async (record: RetainedPage, signal: AbortSignal): Promise<ExecValue> => {
+        const before = new Set(record.page.context().pages());
+        const outcome = await runPlaywrightScript({ script, page: record.page, signal, endsAt });
+        await closeOpenedByScript(record.page, before);
+        return { ...outcome, pageId: record.id, ...await stateAfterScript(record.page, signal) };
+      };
+      if (args.pageId !== undefined) {
+        return await manager.useRetained(args.pageId, (record) =>
+          run(record, AbortSignal.any([record.signal, exec.signal])));
+      }
+      const retentionMs = retentionMsOf(args.timeout);
+      const url = args.url === undefined ? undefined : checkedHttpUrl('browser_web_exec', args.url);
+      let opened: OpenedPage | undefined;
+      try {
+        opened = await manager.openRetainedPage(config.browser, { url, timeoutMs: retentionMs }, exec.signal);
+        const observation = opened.observation;
+        const value = await manager.useRetained(opened.id, (record) =>
+          run(record, AbortSignal.any([record.signal, exec.signal])));
+        return observation !== undefined && observation.status !== 'ready'
+          ? { ...value, status: observation.status, ...(observation.reason ? { reason: observation.reason } : {}) }
+          : value;
+      } finally {
+        // 不保留时（retentionMs 为 0）本次调用结束后立即关闭页面。
+        if (opened !== undefined && retentionMs === 0) {
+          await manager.closeRetained(opened.id).catch(() => {});
+        }
+      }
+    },
+  }));
 }

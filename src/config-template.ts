@@ -5,6 +5,7 @@
  */
 import { defineConfig, type ConfigField } from '@dsh-plugin/dsh-loader/config';
 import {
+  DEFAULT_EXEC_MAX_DURATION_MS,
   DEFAULT_FETCH_TIMEOUT_MS,
   DEFAULT_LAUNCH_TIMEOUT_MS,
   DEFAULT_MAX_HTML_CHARS,
@@ -15,6 +16,7 @@ import {
   DEFAULT_NAVIGATION_TIMEOUT_MS,
   DEFAULT_SEARCH_TIMEOUT_MS,
   DEFAULT_SETTLE_MS,
+  MAX_EXEC_MAX_DURATION_MS,
   MAX_TIMER_DELAY_MS,
   PLUGIN_ID,
   PLUGIN_NAME,
@@ -46,7 +48,7 @@ export function createConfigTemplate() {
     id: PLUGIN_ID,
     packageName: PLUGIN_NAME,
     title: '网页搜索（浏览器）',
-    description: '通过本机浏览器执行 browser_web_search 和 browser_web_fetch，支持结果直提、正文整理和专用浏览器目录。',
+    description: '通过本机浏览器执行 browser_web_search 和 browser_web_fetch，支持结果直提、正文整理、页面句柄复用与 Playwright 脚本执行。',
     fields: [
       object('search', '网页搜索', [
         { type: 'boolean', key: 'enabled', label: '启用 browser_web_search', default: true },
@@ -89,6 +91,10 @@ export function createConfigTemplate() {
         { type: 'boolean', key: 'enabled', label: '允许子代理操作页面', default: true, description: '模型抓取遇到普通交互时可以派出子代理。验证码由浏览器状态单独处理。' },
         { type: 'model', key: 'selection', label: '子代理模型', default: null, description: '留空时子代理沿用发起会话的模型。' },
         { type: 'number', key: 'maxRounds', label: '交互轮数上限', default: DEFAULT_MAX_SUBAGENT_ROUNDS, min: -1, max: 100, description: '单次工具调用最多允许的「子代理操作 → 重新分析」轮数；-1 表示不限制，0 表示不派出子代理。' },
+      ]),
+      object('exec', '脚本执行', [
+        { type: 'boolean', key: 'enabled', label: '启用 browser_web_exec', default: true, description: '允许助手编写 Playwright 脚本操作页面。脚本在插件进程内以受限上下文运行，不构成安全沙箱，仅建议用于可信的测试场景。' },
+        { type: 'number', key: 'maxDurationMs', label: '单次执行上限（毫秒）', default: DEFAULT_EXEC_MAX_DURATION_MS, min: 1000, max: MAX_EXEC_MAX_DURATION_MS, description: '超时后中止脚本并返回错误，页面按 timeout 设置继续保留。' },
       ]),
     ],
     panels: [{

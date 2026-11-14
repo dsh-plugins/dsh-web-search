@@ -42,6 +42,10 @@ export const DEFAULT_LAUNCH_TIMEOUT_MS = 30000;
 export const DEFAULT_NAVIGATION_TIMEOUT_MS = 45000;
 export const DEFAULT_MAX_SUBAGENT_ROUNDS = 3;
 export const MAX_TIMER_DELAY_MS = 2147483647;
+/** `browser_web_exec` 单次脚本执行默认上限（毫秒）。 */
+export const DEFAULT_EXEC_MAX_DURATION_MS = 120000;
+/** `browser_web_exec` 单次脚本执行上限的取值上限（毫秒）。 */
+export const MAX_EXEC_MAX_DURATION_MS = 600000;
 /** `browser_web_open` 与 search/fetch `timeout` 参数的默认页面保留时长（秒）。 */
 export const DEFAULT_PAGE_RETENTION_S = 600;
 /** 页面保留时长上限（秒）。 */
@@ -95,6 +99,10 @@ export interface PluginConfig {
     selection: ConfigModelValue | null;
     maxRounds: number;
   };
+  exec: {
+    enabled: boolean;
+    maxDurationMs: number;
+  };
 }
 
 /** 冻结后的运行时配置快照。 */
@@ -135,6 +143,10 @@ export interface ResolvedPluginConfig {
     readonly enabled: boolean;
     readonly route: ResolvedModelRoute | undefined;
     readonly maxRounds: number;
+  };
+  readonly exec: {
+    readonly enabled: boolean;
+    readonly maxDurationMs: number;
   };
 }
 
@@ -178,6 +190,7 @@ export function resolvePluginConfig(config: { [K in keyof PluginConfig]?: Partia
   const browser = config?.browser ?? {};
   const analysis = config?.analysis ?? {};
   const subagent = config?.subagent ?? {};
+  const exec = config?.exec ?? {};
 
   const engineTimeout = (engine: SearchEngine): number =>
     intInRange(search.engineTimeoutMs?.[engine], 0, 0, MAX_TIMER_DELAY_MS);
@@ -225,6 +238,10 @@ export function resolvePluginConfig(config: { [K in keyof PluginConfig]?: Partia
       route: routeOf(subagent.selection),
       // -1 表示不限制轮数；其余取值裁剪到 [0, 100]。
       maxRounds: subagent.maxRounds === -1 ? -1 : intInRange(subagent.maxRounds, DEFAULT_MAX_SUBAGENT_ROUNDS, 0, 100),
+    },
+    exec: {
+      enabled: exec.enabled ?? true,
+      maxDurationMs: intInRange(exec.maxDurationMs, DEFAULT_EXEC_MAX_DURATION_MS, 1000, MAX_EXEC_MAX_DURATION_MS),
     },
   });
 }

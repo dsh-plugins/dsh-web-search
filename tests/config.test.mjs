@@ -68,3 +68,12 @@ test('独立解析备用引擎、单次预算及人工验证设置', () => {
   assert.equal(config.browser.persistentProfileDir, '/tmp/example');
   assert.equal(config.browser.challengeWaitMs, 5000);
 });
+
+test('脚本执行默认开启，执行上限裁剪到范围内', () => {
+  const config = resolvePluginConfig(undefined);
+  assert.equal(config.exec.enabled, true);
+  assert.equal(config.exec.maxDurationMs, 120000);
+  assert.equal(resolvePluginConfig({ exec: { enabled: false } }).exec.enabled, false);
+  assert.equal(resolvePluginConfig({ exec: { maxDurationMs: 10 } }).exec.maxDurationMs, 1000);
+  assert.equal(resolvePluginConfig({ exec: { maxDurationMs: 99999999 } }).exec.maxDurationMs, 600000);
+});

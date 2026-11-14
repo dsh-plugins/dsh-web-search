@@ -3,7 +3,7 @@ import type { Context } from '@deepseek-ai/cordis';
 import type { HostAPI } from '@dsh-plugin/dsh-loader';
 import type { SubagentRuntime } from '@deepseek-ai/dsh-subagent';
 import { BrowserManager } from './browser.js';
-import { registerBrowserTools } from './browser-tools.js';
+import { registerBrowserTools, registerExecTool } from './browser-tools.js';
 import { createConfigTemplate } from './config-template.js';
 import { PLUGIN_NAME, resolvePluginConfig, type PluginConfig } from './config.js';
 import type { DshFacade } from './dsh.js';
@@ -35,7 +35,7 @@ export async function apply(ctx: Context): Promise<void> {
   let snapshot = resolvePluginConfig(handle.get().value);
   const get = () => snapshot;
   const configureBrowser = (): void => {
-    manager.configure(snapshot.search.enabled || snapshot.fetch.enabled ? snapshot.browser : undefined);
+    manager.configure(snapshot.search.enabled || snapshot.fetch.enabled || snapshot.exec.enabled ? snapshot.browser : undefined);
   };
   configureBrowser();
   const webTools = registerWebTools({ ctx, facade: loader, manager, get, subagents: () => runtime });
@@ -43,7 +43,7 @@ export async function apply(ctx: Context): Promise<void> {
 
   let disposeBrowserTools: (() => void) | undefined;
   const reconcileBrowserTools = (): void => {
-    const wanted = get().subagent.enabled && get().subagent.maxRounds !== 0 && get().fetch.enabled;
+    const wanted = get().exec.enabled || (get().subagent.enabled && get().subagent.maxRounds !== 0 && get().fetch.enabled);
     if (wanted && disposeBrowserTools === undefined) {
       disposeBrowserTools = registerBrowserTools(ctx, manager, loader, get);
     } else if (!wanted && disposeBrowserTools !== undefined) {
@@ -53,6 +53,19 @@ export async function apply(ctx: Context): Promise<void> {
   };
   ctx.effect(() => () => { disposeBrowserTools?.(); });
 
+  let execTool: { maxDurationMs: number; dispose: () => void } | undefined;
+  const reconcileExec = (): void => {
+    const wanted = get().exec.enabled ? get().exec.maxDurationMs : undefined;
+    if (execTool?.maxDurationMs === wanted) {
+      return;
+    }
+    execTool?.dispose();
+    execTool = wanted === undefined
+      ? undefined
+      : { maxDurationMs: wanted, dispose: registerExecTool(ctx, manager, loader, get) };
+  };
+  ctx.effect(() => () => { execTool?.dispose(); });
+
   handle.registerOperation('check-browser', async ({ signal }) => ({
     value: { report: await manager.probe(get().browser, signal) },
   }));
@@ -61,7 +74,9 @@ export async function apply(ctx: Context): Promise<void> {
     configureBrowser();
     webTools.reconcile();
     reconcileBrowserTools();
+    reconcileExec();
   });
 
   reconcileBrowserTools();
+  reconcileExec();
 }

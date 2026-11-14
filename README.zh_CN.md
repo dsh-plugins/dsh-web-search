@@ -3,7 +3,7 @@
 
 [English](README.md)
 
-通过本机浏览器提供 `browser_web_search`、`browser_web_fetch` 与 `browser_web_open`，以及配套的 `web_browser_*` 页面操作工具，适用于需要指定搜索引擎、渲染网页或复用站点会话的场景。
+通过本机浏览器提供 `browser_web_search`、`browser_web_fetch` 与 `browser_web_open`，配套 `web_browser_*` 页面操作工具与可执行助手自写 Playwright 脚本的 `browser_web_exec`，适用于需要指定搜索引擎、渲染网页或复用站点会话的场景。
 
 ## 安装
 
@@ -25,6 +25,7 @@ dsh plugin --profile desktop add @dsh-plugin/dsh-web-search
 | `browser_web_open` | 打开一个 HTTP(S) 页面并返回句柄 `id`；`timeout`（秒，默认 600，上限 86400，`0` 表示打开后立即关闭）是空闲保留时长：在该时间内没有任何 `web_browser_*` 操作时浏览器页面自动关闭，每次操作都会重置计时。 |
 | `web_browser_read` | 传入页面 `id` 读取页面地址、标题与内容；`format` 为 `text`（默认，纯文本）或 `dom`（原始 HTML）。 |
 | `web_browser_click` / `web_browser_type` / `web_browser_press` / `web_browser_scroll` / `web_browser_navigate` / `web_browser_back` | 传入页面 `id` 后分别执行点击、输入、按键、滚动、跳转与后退。 |
+| `browser_web_exec` | 在页面上执行助手编写的 Playwright 脚本。传 `pageId` 复用保留页面，或传 `url` 新开页面；`script` 是 async 函数体，可用 `page`、`context`、`console`、`sleep(ms)`、`assert`、`assertEqual`、`URL`、`URLSearchParams`、`setTimeout` 与 `clearTimeout`，用 `return` 交出结果。返回 `ok`、返回值、脚本控制台输出、耗时、页面状态与页面 ID。 |
 
 `browser_web_search` 与 `browser_web_fetch` 也接受 `timeout`（秒，语义同上）：大于 `0` 时搜索结果页或抓取页在调用结束后保持打开，返回值附带 `pageId`，主会话与子代理都可用 `web_browser_*` 工具继续操作同一页面；`0` 表示调用结束即关闭。页面操作子代理会自动收到所属页面的 `pageId`。
 
@@ -41,6 +42,7 @@ DSH 官方 `web_search` 和 `web_fetch` 默认在对应浏览器工具启用时�
 - **专用浏览器目录**。默认每次调用使用独立的临时上下文。要复用站点登录状态，请填写一个空目录或尚不存在的绝对路径，插件会初始化该目录。同一 DSH profile 的会话共享站点 Cookie，各调用使用自己的标签页。
 - **人工验证**。默认遇到验证码或挑战页时直接返回 `blocked`。若要在浏览器内手动验证，请同时设置专用目录、关闭无头模式，并设置正数的人工验证等待时间。验证是否通过由站点决定。
 - **缓存**。临时浏览器中允许公开缓存且未设置 Cookie 的成功结果，在同一会话内最多复用 60 秒。保存设置会清空缓存。
+- **脚本执行**。`browser_web_exec` 默认开启，单次上限 120 秒。示例：`await page.goto("https://example.com"); return await page.title()`。脚本在 `node:vm` 上下文中运行，只暴露上述绑定，并能中断失控的同步段落，但**不是安全沙箱**：`page` 仍可触达插件进程，请仅用于可信的测试场景，并避免阻塞事件循环。脚本超时或失败时页面按 `timeout` 继续保留，错误直接返回而不抛出。
 
 ## 开发
 
