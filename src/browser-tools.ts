@@ -440,11 +440,11 @@ export function registerExecTool(
       },
       pageId: {
         type: 'string',
-        description: 'Reuse an existing retained page instead of opening a new one. Mutually exclusive with url.',
+        description: 'Reuse an existing retained page instead of opening a new one. Mutually exclusive with url. An empty string is treated as omitted.',
       },
       url: {
         type: 'string',
-        description: 'Absolute http(s) URL to open before running the script. Mutually exclusive with pageId.',
+        description: 'Absolute http(s) URL to open before running the script. Mutually exclusive with pageId. An empty string is treated as omitted.',
       },
       timeout: {
         type: 'integer',
@@ -466,7 +466,9 @@ export function registerExecTool(
       if (script.length > MAX_SCRIPT_CHARS) {
         throw new ToolArgsError([`browser_web_exec: script 超过 ${MAX_SCRIPT_CHARS} 字符上限`]);
       }
-      if (args.url !== undefined && args.pageId !== undefined) {
+      const requestedUrl = args.url === '' ? undefined : args.url;
+      const pageId = args.pageId === '' ? undefined : args.pageId;
+      if (requestedUrl !== undefined && pageId !== undefined) {
         throw new ToolArgsError(['browser_web_exec: url 与 pageId 不能同时提供']);
       }
       const startedAt = performance.now();
@@ -477,12 +479,12 @@ export function registerExecTool(
         await closeOpenedByScript(record.page, before);
         return { ...outcome, pageId: record.id, ...await stateAfterScript(record.page, signal) };
       };
-      if (args.pageId !== undefined) {
-        return await manager.useRetained(args.pageId, (record) =>
+      if (pageId !== undefined) {
+        return await manager.useRetained(pageId, (record) =>
           run(record, AbortSignal.any([record.signal, exec.signal])));
       }
       const retentionMs = retentionMsOf(args.timeout);
-      const url = args.url === undefined ? undefined : checkedHttpUrl('browser_web_exec', args.url);
+      const url = requestedUrl === undefined ? undefined : checkedHttpUrl('browser_web_exec', requestedUrl);
       let opened: OpenedPage | undefined;
       try {
         opened = await manager.openRetainedPage(config.browser, { url, timeoutMs: retentionMs }, exec.signal);
