@@ -56,7 +56,7 @@ test('备用引擎只用于未指定引擎的调用，并给首次尝试保留�
   try {
     const exec = { signal: new AbortController().signal };
     const search = tools.get('browser_web_search');
-    const result = await search.execute({ query: '中国舰船研究 兴波 计算' }, exec);
+    const result = await search.execute({ query: '中国舰船研究 兴波 计算', engine: '', timeout: '' }, exec);
     assert.equal(result.engine, 'baidu');
     assert.deepEqual(result.attempts.map(({ engine, status }) => [engine, status]), [['bing', 'timeout'], ['baidu', 'ok']]);
     assert.ok(visited[0] < 1000);

@@ -107,7 +107,7 @@ export function registerBrowserTools(
       parameters: {
         url: { type: 'string', required: true, description: 'Absolute http(s) URL to open.' },
         timeout: {
-          type: 'integer',
+          oneOf: [{ type: 'integer' }, { type: 'string', const: '' }],
           description: `Idle lifetime of the page in seconds, 1–${MAX_PAGE_RETENTION_S}. The page closes when no operation touches it for this long; any browser_web_* operation resets the timer. Defaults to ${DEFAULT_PAGE_RETENTION_S}. 0 closes the page right after opening (the returned ID becomes unusable).`,
         },
       },
@@ -155,7 +155,7 @@ export function registerBrowserTools(
       description: 'Read an open browser page by ID: URL, title, and page content. format "text" returns visible text; format "dom" returns the cleaned DOM.',
       parameters: {
         id: ID_PARAMETER,
-        format: { type: 'string', enum: ['text', 'dom'], description: '"text" (default) returns visible text content; "dom" returns the cleaned page DOM.' },
+        format: { type: 'string', enum: ['text', 'dom', ''], description: '"text" (default) returns visible text content; "dom" returns the cleaned page DOM.' },
       },
       output: {
         schema: {
@@ -216,7 +216,7 @@ export function registerBrowserTools(
         id: ID_PARAMETER,
         selector: { type: 'string', required: true, description: 'CSS selector of the input/textarea (e.g. input[name="q"]).' },
         text: { type: 'string', required: true, description: 'Text to type.' },
-        submit: { type: 'boolean', description: 'Press Enter after typing. Defaults to false.' },
+        submit: { oneOf: [{ type: 'boolean' }, { type: 'string', const: '' }], description: 'Press Enter after typing. Defaults to false.' },
       },
       output: {
         schema: STATE_SCHEMA,
@@ -262,7 +262,7 @@ export function registerBrowserTools(
       parameters: {
         id: ID_PARAMETER,
         direction: { type: 'string', required: true, enum: ['up', 'down'], description: 'Scroll direction.' },
-        amount: { type: 'integer', description: 'Scroll distance in pixels. Defaults to 700.' },
+        amount: { oneOf: [{ type: 'integer' }, { type: 'string', const: '' }], description: 'Scroll distance in pixels. Defaults to 700.' },
       },
       output: {
         schema: STATE_SCHEMA,
@@ -270,7 +270,7 @@ export function registerBrowserTools(
       },
       timeoutMs: 30000,
       async execute(args, exec) {
-        const amount = args.amount === undefined ? 700 : Math.abs(args.amount);
+        const amount = args.amount === undefined || args.amount === '' ? 700 : Math.abs(args.amount);
         return await manager.useRetained(args.id, (record) =>
           perform(record, exec.signal, (page) => page.mouse.wheel(0, args.direction === 'up' ? -amount : amount)));
       },
@@ -447,7 +447,7 @@ export function registerExecTool(
         description: 'Absolute http(s) URL to open before running the script. Mutually exclusive with pageId. An empty string is treated as omitted.',
       },
       timeout: {
-        type: 'integer',
+        oneOf: [{ type: 'integer' }, { type: 'string', const: '' }],
         description: `Idle lifetime in seconds for a page opened by this call (1–${MAX_PAGE_RETENTION_S}, default ${DEFAULT_PAGE_RETENTION_S}; 0 closes it right after the script, which makes the returned ID unusable). Ignored when pageId is given.`,
       },
     },

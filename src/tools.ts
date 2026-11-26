@@ -312,9 +312,9 @@ function buildSearchTool(env: ToolEnvironment, cache: ResultCache, timeoutMs: nu
     description: 'Search with a local browser. Returns validated organic results and attempt status. Specify an engine to use it exclusively. Pass timeout to keep the results page open and receive a pageId usable with the browser_web_* tools.',
     parameters: {
       query: { type: 'string', required: true, description: 'Complete search query, including any search operators.' },
-      engine: { type: 'string', enum: SEARCH_ENGINES, description: 'Search engine to use.' },
+      engine: { type: 'string', enum: [...SEARCH_ENGINES, ''], description: 'Search engine to use.' },
       timeout: {
-        type: 'integer',
+        oneOf: [{ type: 'integer' }, { type: 'string', const: '' }],
         description: `Seconds to keep the results page open after the search (default ${DEFAULT_PAGE_RETENTION_S}, max ${MAX_PAGE_RETENTION_S}; 0 closes it immediately). While open, the returned pageId can be passed to browser_web_read / browser_web_navigate and other browser_web_* tools.`,
       },
     },
@@ -330,8 +330,8 @@ function buildSearchTool(env: ToolEnvironment, cache: ResultCache, timeoutMs: nu
       if (!query) {
         throw new env.facade.dsh.tools.ToolArgsError([SEARCH_NAME + ': query 不能为空']);
       }
-      const engine: SearchEngine = args.engine ?? config.search.engine;
-      const fallback = args.engine === undefined && config.search.fallbackEngine !== engine ? config.search.fallbackEngine : undefined;
+      const engine: SearchEngine = args.engine || config.search.engine;
+      const fallback = !args.engine && config.search.fallbackEngine !== engine ? config.search.fallbackEngine : undefined;
       const retentionMs = retentionMsOf(args.timeout);
       const totalMs = Math.min(timeoutMs, config.search.timeoutMs);
       const endsAt = performance.now() + totalMs - CLEANUP_MS * 2;
@@ -437,9 +437,9 @@ function buildFetchTool(env: ToolEnvironment, cache: ResultCache, timeoutMs: num
     description: 'Open an HTTP(S) page in a local browser and return Markdown or directly extracted text. Reports blocked pages separately. Pass timeout to keep the page open and receive a pageId usable with the browser_web_* tools.',
     parameters: {
       url: { type: 'string', required: true, description: 'Absolute HTTP(S) URL.' },
-      mode: { type: 'string', enum: FETCH_MODES, description: 'model for Markdown, text for direct extraction.' },
+      mode: { type: 'string', enum: [...FETCH_MODES, ''], description: 'model for Markdown, text for direct extraction.' },
       timeout: {
-        type: 'integer',
+        oneOf: [{ type: 'integer' }, { type: 'string', const: '' }],
         description: `Seconds to keep the page open after the fetch (default ${DEFAULT_PAGE_RETENTION_S}, max ${MAX_PAGE_RETENTION_S}; 0 closes it immediately). While open, the returned pageId can be passed to browser_web_read / browser_web_navigate and other browser_web_* tools.`,
       },
     },
@@ -456,7 +456,7 @@ function buildFetchTool(env: ToolEnvironment, cache: ResultCache, timeoutMs: num
       if (parsed === null || !['http:', 'https:'].includes(parsed.protocol) || parsed.username || parsed.password) {
         throw new env.facade.dsh.tools.ToolArgsError([FETCH_NAME + ': url 必须是无凭据的 HTTP(S) 绝对地址']);
       }
-      const mode: FetchMode = args.mode ?? config.fetch.mode;
+      const mode: FetchMode = args.mode || config.fetch.mode;
       const format = mode === 'model' ? 'markdown' : 'text';
       const session = sessionIdOf(exec.agent);
       const key = session !== undefined && !config.browser.persistentProfileDir

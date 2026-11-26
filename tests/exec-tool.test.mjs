@@ -81,12 +81,14 @@ test('timeout 为 0 时执行完立即关闭页面', async () => {
 test('pageId 模式复用页面且忽略 timeout', async () => {
   const env = harness();
   try {
-    const value = await env.tool.execute({ pageId: 'page-9', timeout: 0, script: 'return "复用"' }, { signal: new AbortController().signal });
-    assert.equal(value.ok, true);
-    assert.equal(value.result, '复用');
-    assert.equal(value.pageId, 'page-9');
+    for (const timeout of [0, '']) {
+      const value = await env.tool.execute({ pageId: 'page-9', url: '', timeout, script: 'return "复用"' }, { signal: new AbortController().signal });
+      assert.equal(value.ok, true);
+      assert.equal(value.result, '复用');
+      assert.equal(value.pageId, 'page-9');
+    }
     assert.deepEqual(env.opened, []);
-    assert.deepEqual(env.used, ['page-9']);
+    assert.deepEqual(env.used, ['page-9', 'page-9']);
     assert.deepEqual(env.closed, []);
   } finally {
     env.dispose();
