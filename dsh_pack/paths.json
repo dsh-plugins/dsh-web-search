@@ -1,0 +1,15 @@
+[
+  {
+    "name": {
+      "zh-CN": "网页搜索与抓取设置",
+      "en": "Web search and fetch settings"
+    },
+    "desc": {
+      "zh-CN": "包含搜索、抓取和浏览器偏好。分享前请清空本机浏览器路径和专用浏览器目录设置。",
+      "en": "Includes search, fetch, and browser preferences. Clear machine-specific browser executable and persistent profile directory settings before sharing."
+    },
+    "paths": [
+      "./profiles/<profile>/config/dsh-web-search/config.json"
+    ]
+  }
+]

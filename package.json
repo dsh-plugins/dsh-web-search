@@ -22,6 +22,7 @@
     }
   },
   "files": [
+    "dsh_pack/",
     "loader-check.mjs",
     "lib",
     "locale",
